@@ -32,9 +32,21 @@ find_package(catkin REQUIRED
     ur_msgs
     pass_through_controllers
     kdl_parser
+    message_generation
 )
 find_package(Boost REQUIRED)
 find_package(ur_client_library REQUIRED)
+
+add_service_files(
+  FILES
+  srv_ur_controller.srv
+  offset_ee.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
 
 catkin_package(
   INCLUDE_DIRS
@@ -68,6 +80,8 @@ catkin_package(
     Boost
     ur_client_library
 )
+
+
 
 add_compile_options(-Wall)
 add_compile_options(-Wextra)
@@ -152,3 +166,7 @@ install(DIRECTORY include/${PROJECT_NAME}/
 install(FILES hardware_interface_plugin.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+add_executable(ur_interface_node src/main_ur_interface.cpp)
+add_dependencies(ur_interface_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(ur_interface_node ${catkin_LIBRARIES} )

@@ -74,6 +74,7 @@ HardwareInterface::HardwareInterface()
   , cartesian_forward_controller_running_(false)
   , twist_controller_running_(false)
   , pose_controller_running_(false)
+  , freedrive_running_(false)
   , pausing_state_(PausingState::RUNNING)
   , pausing_ramp_up_increment_(0.01)
   , controllers_initialized_(false)
@@ -451,6 +452,9 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // Setup the mounted payload through a ROS service
   set_payload_srv_ = robot_hw_nh.advertiseService("set_payload", &HardwareInterface::setPayload, this);
 
+  set_freedrive_srv_ = robot_hw_nh.advertiseService("set_freedrive", &HardwareInterface::setFreedrive, this);
+  get_last_started_ctrl_srv_ = robot_hw_nh.advertiseService("get_last_started_ctrl", &HardwareInterface::getLastStartedCtrl, this);
+
   ur_driver_->startRTDECommunication();
   ROS_INFO_STREAM_NAMED("hardware_interface", "Loaded ur_robot_driver hardware_interface");
 
@@ -717,6 +721,10 @@ void HardwareInterface::write(const ros::Time& time, const ros::Duration& period
 
       ur_driver_->writeJointCommand(cartesian_pose_command_, urcl::comm::ControlMode::MODE_POSE);
     }
+    else if(freedrive_running_)
+    {
+      ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_NOOP);
+    }
     else
     {
       ur_driver_->writeKeepalive();
@@ -756,6 +764,9 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!stop_list : " << resource_it.hardware_interface << std::endl;
+        if(last_started_controller_.compare(resource_it.hardware_interface) == 0)last_started_controller_.clear();
+
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
           position_controller_running_ = false;
@@ -802,6 +813,9 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!start_list : " << resource_it.hardware_interface << std::endl;
+        last_started_controller_ = resource_it.hardware_interface;
+
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
           position_controller_running_ = true;
@@ -1165,6 +1179,53 @@ bool HardwareInterface::setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::Set
   res.success = this->ur_driver_->setPayload(req.mass, cog);
   return true;
 }
+
+bool HardwareInterface::setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res)
+{
+  
+    if(req.data)
+    {
+      if(last_started_controller_.empty())
+      {
+        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START);
+        freedrive_running_ = true;
+        res.success = true;
+      }
+      else
+      {
+        ROS_WARN_STREAM("STOP CONTROLLER BEFORE SETTING FREEDRIVE");
+        res.success = false;
+      }
+    }
+    else
+    {
+      if(freedrive_running_)
+      {
+        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP);
+        freedrive_running_ = false;
+        res.success = true;
+      }
+      else
+      {
+        ROS_WARN_STREAM("FREEDRIVE IS NOT RUNNING");
+        res.success = false;
+      }
+      
+    }
+
+  
+  
+  return true;
+}
+
+bool HardwareInterface::getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
+{
+  res.message = last_started_controller_;
+  res.success = true;
+  return true;
+}
+
+
 
 void HardwareInterface::commandCallback(const std_msgs::StringConstPtr& msg)
 {

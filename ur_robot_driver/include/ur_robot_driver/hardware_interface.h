@@ -53,6 +53,8 @@
 #include <ur_msgs/SetIO.h>
 #include <ur_msgs/SetSpeedSliderFraction.h>
 #include <ur_msgs/SetPayload.h>
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 
 #include <cartesian_interface/cartesian_command_interface.h>
 #include <cartesian_interface/cartesian_state_handle.h>
@@ -213,6 +215,9 @@ protected:
   bool zeroFTSensor(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
   void commandCallback(const std_msgs::StringConstPtr& msg);
   bool setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::SetPayloadResponse& res);
+  bool setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res);
+  bool getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
+
 
   std::unique_ptr<urcl::UrDriver> ur_driver_;
   std::unique_ptr<DashboardClientROS> dashboard_client_;
@@ -236,6 +241,8 @@ protected:
   ros::ServiceServer deactivate_srv_;
   ros::ServiceServer tare_sensor_srv_;
   ros::ServiceServer set_payload_srv_;
+  ros::ServiceServer set_freedrive_srv_;
+  ros::ServiceServer get_last_started_ctrl_srv_;
 
   hardware_interface::JointStateInterface js_interface_;
   scaled_controllers::ScaledPositionJointInterface spj_interface_;
@@ -325,6 +332,7 @@ protected:
   std::atomic<bool> cartesian_forward_controller_running_;
   std::atomic<bool> twist_controller_running_;
   std::atomic<bool> pose_controller_running_;
+  std::atomic<bool> freedrive_running_;
 
   PausingState pausing_state_;
   double pausing_ramp_up_increment_;
@@ -341,6 +349,7 @@ protected:
 
   std::string robot_ip_;
   std::string tf_prefix_;
+  std::string last_started_controller_;
 };
 
 }  // namespace ur_driver
