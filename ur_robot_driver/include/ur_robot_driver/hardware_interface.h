@@ -217,6 +217,8 @@ protected:
   bool setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::SetPayloadResponse& res);
   bool setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res);
   bool getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
+  bool flag_first_controller_started(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
+
 
 
   std::unique_ptr<urcl::UrDriver> ur_driver_;
@@ -243,6 +245,7 @@ protected:
   ros::ServiceServer set_payload_srv_;
   ros::ServiceServer set_freedrive_srv_;
   ros::ServiceServer get_last_started_ctrl_srv_;
+  ros::ServiceServer flag_first_controller_started_srv_;
 
   hardware_interface::JointStateInterface js_interface_;
   scaled_controllers::ScaledPositionJointInterface spj_interface_;
@@ -350,6 +353,7 @@ protected:
   std::string robot_ip_;
   std::string tf_prefix_;
   std::string last_started_controller_;
+  bool flag_first_controller_started_;
 };
 
 }  // namespace ur_driver

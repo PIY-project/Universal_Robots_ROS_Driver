@@ -91,6 +91,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   std::string output_recipe_filename;
   std::string input_recipe_filename;
 
+  flag_first_controller_started_ = false;
+
   // The robot's IP address.
   if (!robot_hw_nh.getParam("robot_ip", robot_ip_))
   {
@@ -454,6 +456,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
 
   set_freedrive_srv_ = robot_hw_nh.advertiseService("set_freedrive", &HardwareInterface::setFreedrive, this);
   get_last_started_ctrl_srv_ = robot_hw_nh.advertiseService("get_last_started_ctrl", &HardwareInterface::getLastStartedCtrl, this);
+  flag_first_controller_started_srv_ = robot_hw_nh.advertiseService("flag_first_controller_started", &HardwareInterface::flag_first_controller_started, this);
 
   ur_driver_->startRTDECommunication();
   ROS_INFO_STREAM_NAMED("hardware_interface", "Loaded ur_robot_driver hardware_interface");
@@ -764,8 +767,8 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
-        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!stop_list : " << resource_it.hardware_interface << std::endl;
-        if(last_started_controller_.compare(resource_it.hardware_interface) == 0)last_started_controller_.clear();
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!stop_list : " << controller_it.name << std::endl;
+        if(last_started_controller_.compare(controller_it.name) == 0)last_started_controller_.clear();
 
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
@@ -813,8 +816,9 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
-        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!start_list : " << resource_it.hardware_interface << std::endl;
-        last_started_controller_ = resource_it.hardware_interface;
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!start_list : " << controller_it.name << std::endl;
+        last_started_controller_ = controller_it.name;
+        flag_first_controller_started_ = true;
 
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
@@ -1220,10 +1224,21 @@ bool HardwareInterface::setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::Se
 
 bool HardwareInterface::getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
 {
-  res.message = last_started_controller_;
+  if(freedrive_running_) res.message = "freedrive";
+  else res.message = last_started_controller_;
+
   res.success = true;
+  
   return true;
 }
+
+bool HardwareInterface::flag_first_controller_started(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
+{
+  res.success = flag_first_controller_started_;
+  
+  return true;
+}
+
 
 
 
