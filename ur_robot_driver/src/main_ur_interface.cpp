@@ -22,7 +22,7 @@
 
 #include <std_msgs/Float64MultiArray.h>
 #include <ur_robot_driver/srv_ur_controller.h>
-#include <ur_robot_driver/offset_ee.h>
+#include <rpwc_msgs/offset_ee.h>
 
 int state_ = 0;
 int previous_state_ = 0;
@@ -30,6 +30,7 @@ ros::ServiceClient client_inv_kin_, client_one_task_inv_kin_set_ee_offset_, clie
 
 bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_robot_driver::srv_ur_controller::Response &res)
 {
+	//STOP LAST CONTOLLER STARTED
 	std_srvs::Trigger lastStartedController;
 	if(!client_get_last_started_ctrl_.call(lastStartedController))
 	{
@@ -67,6 +68,7 @@ bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_r
 		}
 	}
 
+	//START NEW CONTOLLER
 	switch (req.controller)
 	{
 		case 0:
@@ -105,6 +107,15 @@ bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_r
 				ROS_ERROR("Failed to call service client_switch_controller_ IN MAIN_UR_INTERFACE");
 				return false;
 			}
+
+			std_srvs::SetBool setInvkin;
+			setInvkin.request.data = true;
+			if(!client_inv_kin_.call(setInvkin)) 
+			{
+				ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
+				return false;
+			}
+
 			break;
 		}
 		
@@ -116,6 +127,14 @@ bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_r
 			if(!client_set_freedrive_.call(tmpSrv)) 
 			{
 				ROS_ERROR("Failed to call service client_set_freedrive_ IN MAIN_UR_INTERFACE");
+				return false;
+			}
+
+			std_srvs::SetBool setInvkin;
+			setInvkin.request.data = false;
+			if(!client_inv_kin_.call(setInvkin)) 
+			{
+				ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
 				return false;
 			}
 			break;
@@ -132,9 +151,9 @@ bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_r
 	return true;
 }
 
-bool callback_set_ee_offset(ur_robot_driver::offset_ee::Request &req, ur_robot_driver::offset_ee::Response &res)
+bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offset_ee::Response &res)
 {
-	ur_robot_driver::offset_ee tmpSrv;
+	rpwc_msgs::offset_ee tmpSrv;
 	tmpSrv.request.T_last_robot_link_to_EE = req.T_last_robot_link_to_EE;
 	if (!client_one_task_inv_kin_set_ee_offset_.call(tmpSrv))ROS_ERROR("Failed to call service client_one_task_inv_kin_set_ee_offset_");
 
@@ -157,14 +176,15 @@ int main(int argc, char** argv)
 	ros::ServiceServer server_set_ee_offset_ = nh.advertiseService("ur_interface_set_ee_offset", callback_set_ee_offset);
 
 
-	client_inv_kin_ = nh.serviceClient<std_srvs::Empty>("inv_kin");
-	client_one_task_inv_kin_set_ee_offset_ = nh.serviceClient<ur_robot_driver::offset_ee>("one_task_inv_kin_set_ee_offset");
+	client_inv_kin_ = nh.serviceClient<std_srvs::SetBool>("inv_kin");
+	client_one_task_inv_kin_set_ee_offset_ = nh.serviceClient<rpwc_msgs::offset_ee>("one_task_inv_kin_set_ee_offset");
 	client_get_last_started_ctrl_ = nh.serviceClient<std_srvs::Trigger>("ur_hardware_interface/get_last_started_ctrl");
 	client_set_freedrive_ = nh.serviceClient<std_srvs::SetBool>("ur_hardware_interface/set_freedrive");
 	client_switch_controller_ = nh.serviceClient<controller_manager_msgs::SwitchController>("controller_manager/switch_controller");
 	ros::ServiceClient client_get_controllers_list = nh.serviceClient<controller_manager_msgs::ListControllers>("controller_manager/list_controllers");
 	ros::ServiceClient client_flag_first_controller_started = nh.serviceClient<std_srvs::Trigger>("ur_hardware_interface/flag_first_controller_started");
 	
+	client_inv_kin_.waitForExistence();
 	client_get_last_started_ctrl_.waitForExistence();
 	client_set_freedrive_.waitForExistence();
 	client_switch_controller_.waitForExistence();
@@ -231,6 +251,15 @@ int main(int argc, char** argv)
 		ROS_ERROR("Failed to call service client_switch_controller_ IN MAIN_UR_INTERFACE");
 		return 0;
 	}
+
+	std_srvs::SetBool setInvkin;
+	setInvkin.request.data = true;
+	if(!client_inv_kin_.call(setInvkin)) 
+	{
+		ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
+		return 0;
+	}
+
 
 	while (ros::ok())
 	{

@@ -32,6 +32,7 @@ find_package(catkin REQUIRED
     ur_msgs
     pass_through_controllers
     kdl_parser
+    rpwc_msgs
     message_generation
 )
 find_package(Boost REQUIRED)
@@ -40,7 +41,6 @@ find_package(ur_client_library REQUIRED)
 add_service_files(
   FILES
   srv_ur_controller.srv
-  offset_ee.srv
 )
 
 generate_messages(

@@ -45,6 +45,7 @@
   <depend>ur_client_library</depend>
   <depend>ur_dashboard_msgs</depend>
   <depend>ur_msgs</depend>
+  <depend>rpwc_msgs</depend>
 
   <exec_depend>cartesian_trajectory_controller</exec_depend>
   <exec_depend>force_torque_sensor_controller</exec_depend>
