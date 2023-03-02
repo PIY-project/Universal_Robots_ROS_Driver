@@ -154,8 +154,34 @@ bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_r
 bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offset_ee::Response &res)
 {
 	rpwc_msgs::offset_ee tmpSrv;
+	std_srvs::SetBool setInvkin;
+
+	// Disattivo il calcolo della cinematica inversa per sicurezza
+	setInvkin.request.data = false;
+	if(!client_inv_kin_.call(setInvkin)) 
+	{
+		ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
+		return false;
+	}
+	//set della nuova trasformata tra robot last link e EE
 	tmpSrv.request.T_last_robot_link_to_EE = req.T_last_robot_link_to_EE;
-	if (!client_one_task_inv_kin_set_ee_offset_.call(tmpSrv))ROS_ERROR("Failed to call service client_one_task_inv_kin_set_ee_offset_");
+	if (!client_one_task_inv_kin_set_ee_offset_.call(tmpSrv))ROS_ERROR("Failed to call service client_one_task_inv_kin_set_ee_offset");
+	// Riattivo il calcolo della cinematica inversa per sicurezza
+	setInvkin.request.data = true;
+	//10 tentativi nel caso in cui non è entrato ancora nell callback relativa alla lettura della posizione ai giunti
+	for(int i = 0; i < 10; i++)
+	{
+		if(!client_inv_kin_.call(setInvkin)) 
+		{
+			ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_ABB_INTERFACE");
+			return false;
+		}
+		else
+		{
+			if(setInvkin.response.success) break;
+			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_ABB_INTERFACE, REMAINING ATTEMPTS: " << i);
+		}
+	}
 
 	return true;
 }
@@ -172,8 +198,8 @@ int main(int argc, char** argv)
 	ros::NodeHandle nh;
 	ros::Rate rate(10);
 
-	ros::ServiceServer srv_controller = nh.advertiseService("ur_controller", callback_controller);
-	ros::ServiceServer server_set_ee_offset_ = nh.advertiseService("ur_interface_set_ee_offset", callback_set_ee_offset);
+	ros::ServiceServer srv_controller = nh.advertiseService("rpwc_controller", callback_controller);
+	ros::ServiceServer server_set_ee_offset_ = nh.advertiseService("rpwc_interface_set_ee_offset", callback_set_ee_offset);
 
 
 	client_inv_kin_ = nh.serviceClient<std_srvs::SetBool>("inv_kin");
@@ -254,10 +280,19 @@ int main(int argc, char** argv)
 
 	std_srvs::SetBool setInvkin;
 	setInvkin.request.data = true;
-	if(!client_inv_kin_.call(setInvkin)) 
+	//10 tentativi nel caso in cui non è entrato ancora nell callback relativa alla lettura della posizione ai giunti
+	for(int i = 0; i < 10; i++)
 	{
-		ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
-		return 0;
+		if(!client_inv_kin_.call(setInvkin)) 
+		{
+			ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_ABB_INTERFACE");
+			return 0;
+		}
+		else
+		{
+			if(setInvkin.response.success) break;
+			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_ABB_INTERFACE, REMAINING ATTEMPTS: " << i);
+		}
 	}
 
 
