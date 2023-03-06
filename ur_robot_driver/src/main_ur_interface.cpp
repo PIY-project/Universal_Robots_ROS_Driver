@@ -181,6 +181,7 @@ bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offse
 			if(setInvkin.response.success) break;
 			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_ABB_INTERFACE, REMAINING ATTEMPTS: " << i);
 		}
+		usleep(250000);
 	}
 
 	return true;
