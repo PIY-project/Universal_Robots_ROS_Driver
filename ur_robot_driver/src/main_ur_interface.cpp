@@ -173,13 +173,13 @@ bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offse
 	{
 		if(!client_inv_kin_.call(setInvkin)) 
 		{
-			ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_ABB_INTERFACE");
+			ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
 			return false;
 		}
 		else
 		{
 			if(setInvkin.response.success) break;
-			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_ABB_INTERFACE, REMAINING ATTEMPTS: " << i);
+			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_UR_INTERFACE, REMAINING ATTEMPTS: " << i);
 		}
 		usleep(250000);
 	}
