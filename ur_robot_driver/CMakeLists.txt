@@ -3,10 +3,12 @@ project(ur_robot_driver)
 
 add_definitions( -DROS_BUILD )
 
-if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
-  message("${PROJECT_NAME}: You did not request a specific build type: selecting 'RelWithDebInfo'.")
-  set(CMAKE_BUILD_TYPE RelWithDebInfo)
-endif()
+# if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+#   message("${PROJECT_NAME}: You did not request a specific build type: selecting 'RelWithDebInfo'.")
+#   set(CMAKE_BUILD_TYPE RelWithDebInfo)
+# endif()
+
+set(CMAKE_BUILD_TYPE Release)
 
 find_package(catkin REQUIRED
   COMPONENTS
