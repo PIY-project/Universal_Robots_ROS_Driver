@@ -40,9 +40,9 @@ find_package(catkin REQUIRED
 find_package(Boost REQUIRED)
 find_package(ur_client_library REQUIRED)
 
-add_service_files(
-  FILES
-)
+# add_service_files(
+#   FILES
+# )
 
 generate_messages(
   DEPENDENCIES
