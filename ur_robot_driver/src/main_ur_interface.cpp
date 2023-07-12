@@ -21,14 +21,15 @@
 #include <controller_manager_msgs/ListControllers.h>
 
 #include <std_msgs/Float64MultiArray.h>
-#include <ur_robot_driver/srv_ur_controller.h>
+#include <rpwc_msgs/setController.h>
+
 #include <rpwc_msgs/offset_ee.h>
 
 int state_ = 0;
 int previous_state_ = 0;
 ros::ServiceClient client_inv_kin_, client_one_task_inv_kin_set_ee_offset_, client_get_last_started_ctrl_, client_set_freedrive_, client_switch_controller_;
 
-bool callback_controller(ur_robot_driver::srv_ur_controller::Request  &req, ur_robot_driver::srv_ur_controller::Response &res)
+bool callback_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs::setController::Response &res)
 {
 	//STOP LAST CONTOLLER STARTED
 	std_srvs::Trigger lastStartedController;

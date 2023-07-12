@@ -42,7 +42,6 @@ find_package(ur_client_library REQUIRED)
 
 add_service_files(
   FILES
-  srv_ur_controller.srv
 )
 
 generate_messages(
