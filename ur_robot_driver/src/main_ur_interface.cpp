@@ -22,7 +22,7 @@
 
 #include <std_msgs/Float64MultiArray.h>
 #include <rpwc_msgs/setController.h>
-
+#include <rpwc_msgs/getController.h>
 #include <rpwc_msgs/offset_ee.h>
 
 int state_ = 0;
@@ -152,6 +152,23 @@ bool callback_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs::set
 	return true;
 }
 
+bool callback_get_controller(rpwc_msgs::getController::Request  &req, rpwc_msgs::getController::Response &res)
+{
+	std_srvs::Trigger lastStartedController;
+	if(!client_get_last_started_ctrl_.call(lastStartedController))
+	{
+		ROS_ERROR("Failed to call service client_get_last_started_ctrl_ IN MAIN_UR_INTERFACE");
+		return false;
+	}
+	else
+	{
+		if(lastStartedController.response.message.compare("freedrive") == 0) res.controller = 2;
+		else res.controller = 0;//da rivedere
+	}
+	
+	return true;
+}
+
 bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offset_ee::Response &res)
 {
 	rpwc_msgs::offset_ee tmpSrv;
@@ -201,6 +218,7 @@ int main(int argc, char** argv)
 	ros::Rate rate(10);
 
 	ros::ServiceServer srv_controller = nh.advertiseService("rpwc_controller", callback_controller);
+	ros::ServiceServer srv_get_controller = nh.advertiseService("get_rpwc_controller", callback_get_controller);
 	ros::ServiceServer server_set_ee_offset_ = nh.advertiseService("rpwc_interface_set_ee_offset", callback_set_ee_offset);
 
 
