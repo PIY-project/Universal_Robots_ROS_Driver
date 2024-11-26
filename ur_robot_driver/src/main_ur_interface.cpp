@@ -27,7 +27,7 @@
 
 int state_ = 0;
 int previous_state_ = 0;
-ros::ServiceClient client_inv_kin_, client_one_task_inv_kin_set_ee_offset_, client_get_last_started_ctrl_, client_set_freedrive_, client_switch_controller_;
+ros::ServiceClient client_inv_kin_, client_get_last_started_ctrl_, client_set_freedrive_, client_switch_controller_;
 
 bool callback_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs::setController::Response &res)
 {
@@ -169,42 +169,6 @@ bool callback_get_controller(rpwc_msgs::getController::Request  &req, rpwc_msgs:
 	return true;
 }
 
-bool callback_set_ee_offset(rpwc_msgs::offset_ee::Request &req, rpwc_msgs::offset_ee::Response &res)
-{
-	rpwc_msgs::offset_ee tmpSrv;
-	std_srvs::SetBool setInvkin;
-
-	// Disattivo il calcolo della cinematica inversa per sicurezza
-	setInvkin.request.data = false;
-	if(!client_inv_kin_.call(setInvkin)) 
-	{
-		ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
-		return false;
-	}
-	//set della nuova trasformata tra robot last link e EE
-	tmpSrv.request.T_last_robot_link_to_EE = req.T_last_robot_link_to_EE;
-	if (!client_one_task_inv_kin_set_ee_offset_.call(tmpSrv))ROS_ERROR("Failed to call service client_one_task_inv_kin_set_ee_offset");
-	// Riattivo il calcolo della cinematica inversa per sicurezza
-	setInvkin.request.data = true;
-	//10 tentativi nel caso in cui non è entrato ancora nell callback relativa alla lettura della posizione ai giunti
-	for(int i = 0; i < 10; i++)
-	{
-		if(!client_inv_kin_.call(setInvkin)) 
-		{
-			ROS_ERROR("Failed to call service client_inv_kin_ IN MAIN_UR_INTERFACE");
-			return false;
-		}
-		else
-		{
-			if(setInvkin.response.success) break;
-			else ROS_WARN_STREAM("NEW ATTEMP TO SET INVKIN IN MAIN_UR_INTERFACE, REMAINING ATTEMPTS: " << i);
-		}
-		usleep(250000);
-	}
-
-	return true;
-}
-
 
 int main(int argc, char** argv)
 {
@@ -219,11 +183,9 @@ int main(int argc, char** argv)
 
 	ros::ServiceServer srv_controller = nh.advertiseService("rpwc_controller", callback_controller);
 	ros::ServiceServer srv_get_controller = nh.advertiseService("get_rpwc_controller", callback_get_controller);
-	ros::ServiceServer server_set_ee_offset_ = nh.advertiseService("rpwc_interface_set_ee_offset", callback_set_ee_offset);
 
 
 	client_inv_kin_ = nh.serviceClient<std_srvs::SetBool>("inv_kin");
-	client_one_task_inv_kin_set_ee_offset_ = nh.serviceClient<rpwc_msgs::offset_ee>("one_task_inv_kin_set_ee_offset");
 	client_get_last_started_ctrl_ = nh.serviceClient<std_srvs::Trigger>("ur_hardware_interface/get_last_started_ctrl");
 	client_set_freedrive_ = nh.serviceClient<std_srvs::SetBool>("ur_hardware_interface/set_freedrive");
 	client_switch_controller_ = nh.serviceClient<controller_manager_msgs::SwitchController>("controller_manager/switch_controller");
