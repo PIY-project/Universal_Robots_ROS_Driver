@@ -115,7 +115,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
 
   // When the robot's URDF is being loaded with a prefix, we need to know it here, as well, in order
   // to publish correct frame names for frames reported by the robot directly.
-  robot_hw_nh.param<std::string>("tf_prefix", tf_prefix_, "");
+  robot_hw_nh.param<std::string>("prefix", prefix_, "");
 
   // Optional parameter to change the id of the wrench frame
   robot_hw_nh.param<std::string>("wrench_frame_id", wrench_frame_id, "wrench");
@@ -185,8 +185,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // message gets published here. So this is equivalent to the information whether the robot accepts
   // commands from ROS side.
   program_state_pub_ = robot_hw_nh.advertise<std_msgs::Bool>("robot_program_running", 10, true);
-  tcp_transform_.header.frame_id = tf_prefix_ + "base";
-  tcp_transform_.child_frame_id = tf_prefix_ + "tool0_controller";
+  tcp_transform_.header.frame_id = prefix_ + "base";
+  tcp_transform_.child_frame_id = prefix_ + "tool0_controller";
 
   // Should the tool's RS485 interface be forwarded to the ROS machine? This is only available on
   // e-Series models. Setting this parameter to TRUE requires multiple other parameters to be set,as
@@ -365,7 +365,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   speedsc_interface_.registerHandle(scaled_controllers::SpeedScalingHandle(speed_scaling_id, &speed_scaling_combined_));
 
   fts_interface_.registerHandle(hardware_interface::ForceTorqueSensorHandle(
-      wrench_frame_id, tf_prefix_ + "tool0_controller", fts_measurements_.begin(), fts_measurements_.begin() + 3));
+      wrench_frame_id, prefix_ + "tool0_controller", fts_measurements_.begin(), fts_measurements_.begin() + 3));
 
   robot_status_interface_.registerHandle(industrial_robot_status_interface::IndustrialRobotStatusHandle(
       "industrial_robot_status_handle", robot_status_resource_));
@@ -378,15 +378,15 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
       std::bind(&HardwareInterface::startCartesianInterpolation, this, std::placeholders::_1));
   cart_traj_interface_.registerCancelCallback(std::bind(&HardwareInterface::cancelInterpolation, this));
 
-  ros_controllers_cartesian::CartesianStateHandle handle(tf_prefix_ + "base", tf_prefix_ + "tool0_controller",
+  ros_controllers_cartesian::CartesianStateHandle handle(prefix_ + "base", prefix_ + "tool0_controller",
                                                          &cart_pose_, &cart_twist_, &cart_accel_, &cart_jerk_);
   cart_interface_.registerHandle(handle);
   twist_interface_.registerHandle(ros_controllers_cartesian::TwistCommandHandle(
-      cart_interface_.getHandle(tf_prefix_ + "tool0_controller"), &twist_command_));
-  twist_interface_.getHandle(tf_prefix_ + "tool0_controller");
+      cart_interface_.getHandle(prefix_ + "tool0_controller"), &twist_command_));
+  twist_interface_.getHandle(prefix_ + "tool0_controller");
   pose_interface_.registerHandle(ros_controllers_cartesian::PoseCommandHandle(
-      cart_interface_.getHandle(tf_prefix_ + "tool0_controller"), &pose_command_));
-  pose_interface_.getHandle(tf_prefix_ + "tool0_controller");
+      cart_interface_.getHandle(prefix_ + "tool0_controller"), &pose_command_));
+  pose_interface_.getHandle(prefix_ + "tool0_controller");
 
   // Register interfaces
   registerInterface(&js_interface_);

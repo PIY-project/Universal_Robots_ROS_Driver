@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <launch>
-<arg name="hw_namespace" default="setup1/robot1"/>
+<arg name="hw_namespace" default="ciccio1"/>
 <group ns="$(arg hw_namespace)">
         <arg name="debug" default="false" doc="Debug flag that will get passed on to ur_common.launch"/>
         <arg name="robot_ip" default="192.168.56.100" doc="IP address by which the robot can be reached."/>
@@ -9,7 +9,7 @@
         <arg name="script_sender_port" default="50002" doc="The driver will offer an interface to receive the program's URScript on this port. If the robot cannot connect to this port, `External Control` will stop immediately."/>
         <arg name="trajectory_port" default="50003" doc="Port that will be opened by the driver to allow trajectory forwarding."/>
         <arg name="script_command_port" default="50004" doc="Port that will be opened by the driver to allow forwarding script commands to the robot."/>
-        <arg name="tf_prefix" default="" doc="tf_prefix used for the robot."/>
+        <!-- <arg name="tf_prefix" default="" doc="tf_prefix used for the robot."/> -->
         <arg name="controllers" default="joint_state_controller scaled_pos_joint_traj_controller speed_scaling_state_controller force_torque_sensor_controller" doc="Controllers that are activated by default."/>
         <arg name="stopped_controllers" default="pos_joint_traj_controller joint_group_vel_controller" doc="Controllers that are initally loaded, but not started."/>
         <arg name="controller_config_file" default="$(find ur_robot_driver)/config/ur10e_controllers.yaml" doc="Config file used for defining the ROS-Control controllers."/>
@@ -27,7 +27,10 @@
         <arg name="headless_mode" default="true" doc="Automatically send URScript to robot to execute. On e-Series this does require the robot to be in 'remote-control' mode. With this, the URCap is not needed on the robot."/>
         <arg name="ur_hardware_interface_node_required" default="true" doc="Shut down ros environment if ur_hardware_interface-node dies."/>
         <arg name="urscript_file" default="/home/exsensia1/Universal_Robots_Client_Library/resources/external_control.urscript" doc="Path to URScript that will be sent to the robot and that forms the main control program."/>
-    
+        <arg name="prefix" default="$(arg hw_namespace)/"/>
+        
          <include file="$(find ur_robot_driver)/launch/ur_common.launch" pass_all_args="true"/>
+
+         <node name="rqt_gui" pkg="rqt_gui" type="rqt_gui"/>
     </group>
 </launch>

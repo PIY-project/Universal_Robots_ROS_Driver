@@ -369,7 +369,8 @@ protected:
   bool non_blocking_read_;
 
   std::string robot_ip_;
-  std::string tf_prefix_;
+  // std::string tf_prefix_;
+  std::string prefix_;
 };
 
 }  // namespace ur_driver
