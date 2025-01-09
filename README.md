@@ -3,7 +3,7 @@
 # Universal_Robots_ROS_Driver
 Universal Robots have become a dominant supplier of lightweight, robotic manipulators for industry, as well as for scientific research and education. The Robot Operating System (ROS) has developed from a community-centered movement to a mature framework and quasi standard, providing a rich set of powerful tools for robot engineers and researchers, working in many different domains.
 
-<center><img src="ur_robot_driver/doc/initial_setup_images/e-Series.jpg" alt="Universal Robot e-Series family" style="width: 80%;"/></center>
+<div align="center"><img src="ur_robot_driver/doc/initial_setup_images/family_photo.png" alt="Universal Robot e-Series family" style="width: 90%;"/></div>
 
 With the release of UR’s new e-Series, the demand for a ROS driver that supports the new manipulators and the newest ROS releases and paradigms like ROS-control has increased further. The goal of this driver is to provide a stable and sustainable interface between UR robots and ROS that strongly benefit all parties.
 
@@ -46,7 +46,7 @@ To create an issue on the [Issue Board](https://github.com/UniversalRobots/Unive
 If you need help using this driver, please see the ROS-category in the [UR+ Developer Forum](https://forum.universal-robots.com/c/ros). 
 
 ## Features
- * Works for all **CB3 (with software version >= 3.12.0) and e-Series (software >= 5.5.1)** robots and uses the RTDE interface for communication, whenever possible.
+ * Works for all **CB3 (with software version >= 3.14.3) and e-Series (software >= 5.9.4)** robots and uses the RTDE interface for communication, whenever possible.
  * **Factory calibration** of the robot inside ROS to reach Cartesian
    targets precisely.
  * **Realtime-enabled** communication structure to robustly cope with the 2ms cycle time of the
@@ -85,37 +85,35 @@ This repository contains the new **ur_robot_driver** and a couple of helper pack
 
   * **ur_calibration**: Package around extracting and converting a robot's factory calibration
     information to make it usable by the robot_description.
+  * **ur_dashboard_msgs**: Message definitions used for interacting with the dashboard node.
   * **ur_robot_driver**: The actual driver package.
 
 ## Requirements
-This driver requires a system setup with ROS. It is recommended to use **Ubuntu 18.04 with ROS
-melodic**, however using Ubuntu 20.04 with ROS noetic should also work.
+This driver requires a system setup with ROS. It is recommended to use **Ubuntu 20.04 with ROS
+noetic**.
 
 To make sure that robot control isn't affected by system latencies, it is highly recommended to use
 a real-time kernel with the system. See the [real-time setup guide](ur_robot_driver/doc/real_time.md)
 on information how to set this up.
 
-## Preliminary UR16e support
-This driver supports all UR variants including the UR16e. However, upstream support for the UR16e is
-not finished, yet. When using the UR16e there is currently no support for gazebo or MoveIt!.
+## Install from binary packages
 
-See [#97](https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/pull/97) for details on
-using the latest upstream develop branch of
-[ros_industrial/universal_robot](https://github.com/ros-industrial/universal_robot) which includes
-gazebo support for the ur16e, but no working MoveIt! support at the time of writing.
+1. [Install ROS](http://wiki.ros.org/noetic/Installation/Ubuntu). This package only supports ROS
+noetic. If you want to use a UR robot arm with ROS 2, please see the
+[ROS 2 driver](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver/).
+2. Install the driver using
+```bash
+sudo apt install ros-${ROS_DISTRO}-ur-robot-driver ros-${ROS_DISTRO}-ur-calibration
+```
+## Building from source
 
-## Building
+Before building from source make sure that you actually need to do that. We recommend you install the driver from its binary packages unless you want to join development and submit changes.
 
 **Note:** The driver consists of a [C++
 library](https://github.com/UniversalRobots/Universal_Robots_Client_Library) that abstracts the
 robot's interfaces and a ROS driver on top of that. As the library can be built without ROS support,
 it is not a catkin package and therefore requires a different treatment when being built inside the
 workspace. See The alternative build method below if you'd like to build the library from source.
-
-If you don't want to build the library from source, it is available as a binary package through the
-ROS distribution of ROS melodic and noetic. It will be installed automatically if you
-follow the steps below. If you'd like to also build the library from source, please follow the steps
-explained in the [next section](#alternative-all-source-build).
 
 ```bash
 # source global ros
@@ -127,11 +125,16 @@ $ mkdir -p catkin_ws/src && cd catkin_ws
 # clone the driver
 $ git clone https://github.com/UniversalRobots/Universal_Robots_ROS_Driver.git src/Universal_Robots_ROS_Driver
 
-# clone the description. Currently, it is necessary to use the melodic-devel branch.
-$ git clone -b melodic-devel https://github.com/ros-industrial/universal_robot.git src/universal_robot
+# Install vcstool
+$ sudo apt update -qq
+$ sudo apt install python3-vcstool
+
+# clone the direct dependencies. As the latest version might require the latest upstream version,
+# we'll build things from source. Note: This does not include the client library. If there are API
+# changes there, you might have to use the all-source build as explained below.
+$ vcs import --input src/Universal_Robots_ROS_Driver/.noetic.rosinstall src
 
 # install dependencies
-$ sudo apt update -qq
 $ rosdep update
 $ rosdep install --from-paths src --ignore-src -y
 
@@ -150,10 +153,11 @@ build`](https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_build.html).
 ```bash
 $ source /opt/ros/<your_ros_version>/setup.bash
 $ mkdir -p catkin_ws/src && cd catkin_ws
-$ git clone -b boost https://github.com/UniversalRobots/Universal_Robots_Client_Library.git src/Universal_Robots_Client_Library
-$ git clone https://github.com/UniversalRobots/Universal_Robots_ROS_Driver.git src/Universal_Robots_ROS_Driver
-$ git clone -b melodic-devel https://github.com/ros-industrial/universal_robot.git src/universal_robot
+$ git clone https://github.com/UniversalRobots/Universal_Robots_Client_Library.git src/Universal_Robots_Client_Library
 $ sudo apt update -qq
+$ sudo apt install python3-vcstool
+$ vcs import --input src/Universal_Robots_ROS_Driver/.noetic.rosinstall src
+$ git clone https://github.com/UniversalRobots/Universal_Robots_ROS_Driver.git src/Universal_Robots_ROS_Driver
 $ rosdep update
 $ rosdep install --from-paths src --ignore-src -y
 $ catkin_make_isolated
@@ -205,7 +209,7 @@ To actually start the robot driver use one of the existing launch files
 
     $ roslaunch ur_robot_driver <robot_type>_bringup.launch robot_ip:=192.168.56.101
 
-where **<robot_type>** is one of *ur3, ur5, ur10, ur3e, ur5e, ur10e, ur16e*. Note that in this example we
+where **<robot_type>** is one of *ur3, ur5, ur10, ur3e, ur5e, ur10e, ur16e, ur20, ur30*. Note that in this example we
 load the calibration parameters for the robot "ur10_example".
 
 If you calibrated your robot before, pass that calibration to the launch file:
@@ -338,7 +342,7 @@ end user.
 ### Can this driver be used inside a combined hardware interface?
 Yes, this is possible. However, if used inside a [combined HW
 interface](http://wiki.ros.org/combined_robot_hw) we recommend to enable [non-blocking read
-functinality](https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/master/ur_robot_driver/doc/ROS_INTERFACE.md#non_blocking_read-default-false).
+functionality](https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/master/ur_robot_driver/doc/ROS_INTERFACE.md#non_blocking_read-default-false).
 
 ### I sent raw script code to the robot but it is not executed
 On the e-Series the robot has to be in [remote control

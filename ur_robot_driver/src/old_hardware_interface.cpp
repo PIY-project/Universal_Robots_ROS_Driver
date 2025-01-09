@@ -58,11 +58,11 @@ static const std::bitset<11>
 HardwareInterface::HardwareInterface()
   : joint_position_command_({ 0, 0, 0, 0, 0, 0 })
   , joint_velocity_command_({ 0, 0, 0, 0, 0, 0 })
+  , cartesian_velocity_command_({ 0, 0, 0, 0, 0, 0 })
+  , cartesian_pose_command_({ 0, 0, 0, 0, 0, 0 })
   , joint_positions_{ { 0, 0, 0, 0, 0, 0 } }
   , joint_velocities_{ { 0, 0, 0, 0, 0, 0 } }
   , joint_efforts_{ { 0, 0, 0, 0, 0, 0 } }
-  , cartesian_velocity_command_({ 0, 0, 0, 0, 0, 0 })
-  , cartesian_pose_command_({ 0, 0, 0, 0, 0, 0 })
   , standard_analog_input_{ { 0, 0 } }
   , standard_analog_output_{ { 0, 0 } }
   , joint_names_(6)
@@ -90,6 +90,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   std::string speed_scaling_id;
   std::string output_recipe_filename;
   std::string input_recipe_filename;
+
+  flag_first_controller_started_ = false;
 
   // The robot's IP address.
   if (!robot_hw_nh.getParam("robot_ip", robot_ip_))
@@ -177,10 +179,6 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
     return false;
   }
 
-  // True if splines should be used as interpolation on the robot controller when forwarding trajectory, if false movej
-  // or movel commands are used
-  use_spline_interpolation_ = robot_hw_nh.param<bool>("use_spline_interpolation", "true");
-
   // Whenever the runtime state of the "External Control" program node in the UR-program changes, a
   // message gets published here. So this is equivalent to the information whether the robot accepts
   // commands from ROS side.
@@ -248,7 +246,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
     }
     tool_comm_setup->setStopBits(stop_bits);
 
-    float rx_idle_chars;
+    int rx_idle_chars;
     // Number of idle chars for the RX unit used for tool communication. Will be set as soon as the UR-Program on the
     // robot is started. Valid values: min=1.0, max=40.0
     //
@@ -262,7 +260,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
     tool_comm_setup->setRxIdleChars(rx_idle_chars);
     tool_comm_setup->setParity(static_cast<urcl::Parity>(parity));
 
-    float tx_idle_chars;
+    int tx_idle_chars;
     // Number of idle chars for the TX unit used for tool communication. Will be set as soon as the UR-Program on the
     // robot is started. Valid values: min=0.0, max=40.0
     //
@@ -323,6 +321,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   }
   ur_driver_->registerTrajectoryDoneCallback(
       std::bind(&HardwareInterface::passthroughTrajectoryDoneCb, this, std::placeholders::_1));
+  ur_driver_->setKeepaliveCount(5);
 
   // Send arbitrary script commands to this topic. Note: On e-Series the robot has to be in
   // remote-control mode.
@@ -436,9 +435,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // doing. Using this with other controllers might lead to unexpected behaviors.
   set_speed_slider_srv_ = robot_hw_nh.advertiseService("set_speed_slider", &HardwareInterface::setSpeedSlider, this);
 
-  // Services to set any of the robot's IOs
+  // Service to set any of the robot's IOs
   set_io_srv_ = robot_hw_nh.advertiseService("set_io", &HardwareInterface::setIO, this);
-  set_analog_output_srv_ = robot_hw_nh.advertiseService("set_analog_output", &HardwareInterface::setAnalogOutput, this);
 
   if (headless_mode)
   {
@@ -457,22 +455,12 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // Setup the mounted payload through a ROS service
   set_payload_srv_ = robot_hw_nh.advertiseService("set_payload", &HardwareInterface::setPayload, this);
 
-  // Call this to activate or deactivate using spline interpolation locally on the UR controller, when forwarding
-  // trajectories to the UR robot.
-  activate_spline_interpolation_srv_ = robot_hw_nh.advertiseService(
-      "activate_spline_interpolation", &HardwareInterface::activateSplineInterpolation, this);
-
-  // Calling this service will return the software version of the robot.
-  get_robot_software_version_srv =
-      robot_hw_nh.advertiseService("get_robot_software_version", &HardwareInterface::getRobotSoftwareVersion, this);
+  set_freedrive_srv_ = robot_hw_nh.advertiseService("set_freedrive", &HardwareInterface::setFreedrive, this);
+  get_last_started_ctrl_srv_ = robot_hw_nh.advertiseService("get_last_started_ctrl", &HardwareInterface::getLastStartedCtrl, this);
+  flag_first_controller_started_srv_ = robot_hw_nh.advertiseService("flag_first_controller_started", &HardwareInterface::flag_first_controller_started, this);
 
   ur_driver_->startRTDECommunication();
   ROS_INFO_STREAM_NAMED("hardware_interface", "Loaded ur_robot_driver hardware_interface");
-
-  set_freedrive_srv_ = robot_hw_nh.advertiseService("set_freedrive", &HardwareInterface::setControlToFreeDriveSrv, this);
-
-  client_list_controllers_ = robot_hw_nh.serviceClient<controller_manager_msgs::ListControllers> (ros::this_node::getNamespace() + "/controller_manager/list_controllers");
-  client_switch_controllers_ = robot_hw_nh.serviceClient<controller_manager_msgs::SwitchController>(ros::this_node::getNamespace() + "/controller_manager/switch_controller");
 
   return true;
 }
@@ -780,6 +768,9 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!stop_list : " << controller_it.name << std::endl;
+        if(last_started_controller_.compare(controller_it.name) == 0)last_started_controller_.clear();
+
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
           position_controller_running_ = false;
@@ -826,6 +817,10 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
     {
       if (checkControllerClaims(resource_it.resources))
       {
+        std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!start_list : " << controller_it.name << std::endl;
+        last_started_controller_ = controller_it.name;
+        flag_first_controller_started_ = true;
+
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
           position_controller_running_ = true;
@@ -1146,16 +1141,6 @@ bool HardwareInterface::setIO(ur_msgs::SetIORequest& req, ur_msgs::SetIOResponse
   return true;
 }
 
-bool HardwareInterface::setAnalogOutput(ur_msgs::SetAnalogOutputRequest& req, ur_msgs::SetAnalogOutputResponse& res)
-{
-  if (ur_driver_)
-  {
-    res.success = ur_driver_->getRTDEWriter().sendStandardAnalogOutput(
-        req.data.pin, req.data.state, static_cast<urcl::AnalogOutputType>(req.data.domain));
-  }
-  return true;
-}
-
 bool HardwareInterface::resendRobotProgram(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
 {
   res.success = ur_driver_->sendRobotProgram();
@@ -1200,112 +1185,63 @@ bool HardwareInterface::setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::Set
   return true;
 }
 
-std::vector<std::string> HardwareInterface::getControllersRunning()
+bool HardwareInterface::setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res)
 {
-	std::vector<std::string> controllers_running;
-
-	controller_manager_msgs::ListControllers::Request  req;
-	controller_manager_msgs::ListControllers::Response res;
-
-	client_list_controllers_.call(req, res);
-
-	for(auto controller : res.controller)
-	{
-		if(controller.state == "running")
-		{
-			ROS_INFO("Controller: %s is in state: %s", controller.name.c_str(), controller.state.c_str());
-			controllers_running.push_back(controller.name);
-		}
-	}
-
-	return controllers_running;
-}
-
-void HardwareInterface::switchControllers(std::vector<std::string>& controllers_to_start,
-						std::vector<std::string>& controllers_to_stop,
-						int strictness,
-						bool start_asap,
-						int timeout)
-{
-	controller_manager_msgs::SwitchController::Request  req;
-	controller_manager_msgs::SwitchController::Response res;
-
-	req.start_controllers = controllers_to_start;
-	req.stop_controllers = controllers_to_stop;
-	req.start_asap = start_asap;
-	req.strictness = req.STRICT;
-	req.timeout = 0.0;
-
-	client_switch_controllers_.call(req, res);
-
-	if(!res.ok)
-		ROS_ERROR("Impossible to switch controllers");
-
-}
-
-bool HardwareInterface::setControlToFreeDriveSrv(ur_msgs::set_control_to_freedriveRequest& req, ur_msgs::set_control_to_freedriveResponse& res)
-{
-  res.success = true;
   
-
-  if(req.set_freedrive == freedrive_running_)
-  {
-    ROS_WARN("Robot is already in this control state");
-  }
-  else
-  {
-    std::vector<std::string> controllers_to_stop;
-    std::vector<std::string> controllers_to_start;
-    if(req.set_freedrive)
+    if(req.data)
     {
-      std::vector<std::string>  controllers_running = getControllersRunning();
-
-      // Check whether you are starting/stopping joint_state_cotroller
-      controllers_running_before_free_drive_.clear();
-      for(std::string controller : controllers_running)
+      if(last_started_controller_.empty())
       {
-        if(controller != "joint_state_controller" && controller != "speed_scaling_state_controller" && controller != "force_torque_sensor_controller")
-          controllers_running_before_free_drive_.push_back(controller);
+        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START);
+        freedrive_running_ = true;
+        res.success = true;
       }
-
-      // Calling service UnloadController
-      controllers_to_start = {};
-      controllers_to_stop  = controllers_running_before_free_drive_;
-      switchControllers(controllers_to_start, controllers_to_stop, 2, false, 0.0);
-
-      ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START);
-      freedrive_running_ = true;
+      else
+      {
+        ROS_WARN_STREAM("STOP CONTROLLER BEFORE SETTING FREEDRIVE");
+        res.success = false;
+      }
     }
     else
     {
-      ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP);
-      freedrive_running_ = false;
-
-      // Calling service SwitchController
-      controllers_to_stop  = {};
-      if (req.controller_name.empty()) controllers_to_start = controllers_running_before_free_drive_;
-      else controllers_to_start.push_back(req.controller_name);
+      if(freedrive_running_)
+      {
+        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP);
+        freedrive_running_ = false;
+        res.success = true;
+      }
+      else
+      {
+        ROS_WARN_STREAM("FREEDRIVE IS NOT RUNNING");
+        res.success = false;
+      }
       
-      switchControllers(controllers_to_start, controllers_to_stop, 2, false, 0.0);
-
     }
 
-    
-  }
+  
   
   return true;
 }
 
-bool HardwareInterface::getRobotSoftwareVersion(ur_msgs::GetRobotSoftwareVersionRequest& req,
-                                                ur_msgs::GetRobotSoftwareVersionResponse& res)
+bool HardwareInterface::getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
 {
-  urcl::VersionInformation version_info = this->ur_driver_->getVersion();
-  res.major = version_info.major;
-  res.minor = version_info.minor;
-  res.bugfix = version_info.bugfix;
-  res.build = version_info.build;
+  if(freedrive_running_) res.message = "freedrive";
+  else res.message = last_started_controller_;
+
+  res.success = true;
+  
   return true;
 }
+
+bool HardwareInterface::flag_first_controller_started(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res)
+{
+  res.success = flag_first_controller_started_;
+  
+  return true;
+}
+
+
+
 
 void HardwareInterface::commandCallback(const std_msgs::StringConstPtr& msg)
 {
@@ -1329,21 +1265,6 @@ void HardwareInterface::commandCallback(const std_msgs::StringConstPtr& msg)
   {
     ROS_ERROR_STREAM("Error sending script to robot");
   }
-}
-
-bool HardwareInterface::activateSplineInterpolation(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res)
-{
-  use_spline_interpolation_ = req.data;
-  if (use_spline_interpolation_)
-  {
-    res.message = "Activated spline interpolation in forward trajectory mode.";
-  }
-  else
-  {
-    res.message = "Deactivated spline interpolation in forward trajectory mode.";
-  }
-  res.success = true;
-  return true;
 }
 
 void HardwareInterface::publishRobotAndSafetyMode()
@@ -1411,46 +1332,7 @@ void HardwareInterface::startJointInterpolation(const hardware_interface::JointT
     p[4] = point.positions[4];
     p[5] = point.positions[5];
     double next_time = point.time_from_start.toSec();
-    if (!use_spline_interpolation_)
-    {
-      ur_driver_->writeTrajectoryPoint(p, false, next_time - last_time);
-    }
-    else  // Use spline interpolation
-    {
-      if (point.velocities.size() == 6 && point.accelerations.size() == 6)
-      {
-        urcl::vector6d_t v, a;
-        v[0] = point.velocities[0];
-        v[1] = point.velocities[1];
-        v[2] = point.velocities[2];
-        v[3] = point.velocities[3];
-        v[4] = point.velocities[4];
-        v[5] = point.velocities[5];
-
-        a[0] = point.accelerations[0];
-        a[1] = point.accelerations[1];
-        a[2] = point.accelerations[2];
-        a[3] = point.accelerations[3];
-        a[4] = point.accelerations[4];
-        a[5] = point.accelerations[5];
-        ur_driver_->writeTrajectorySplinePoint(p, v, a, next_time - last_time);
-      }
-      else if (point.velocities.size() == 6)
-      {
-        urcl::vector6d_t v;
-        v[0] = point.velocities[0];
-        v[1] = point.velocities[1];
-        v[2] = point.velocities[2];
-        v[3] = point.velocities[3];
-        v[4] = point.velocities[4];
-        v[5] = point.velocities[5];
-        ur_driver_->writeTrajectorySplinePoint(p, v, next_time - last_time);
-      }
-      else
-      {
-        ROS_ERROR_THROTTLE(1, "Spline interpolation using positions only is not supported.");
-      }
-    }
+    ur_driver_->writeTrajectoryPoint(p, false, next_time - last_time);
     last_time = next_time;
   }
   ROS_DEBUG("Finished Sending Trajectory");

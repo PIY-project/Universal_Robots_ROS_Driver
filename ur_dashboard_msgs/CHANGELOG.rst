@@ -2,6 +2,17 @@
 Changelog for package ur_dashboard_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+2.1.5 (2024-06-17)
+------------------
+
+2.1.4 (2024-04-08)
+------------------
+
+2.1.3 (2023-12-18)
+------------------
+* Bump cmake minimum version for all packages in repo
+* Contributors: Felix Exner
+
 2.1.2 (2023-01-23)
 ------------------
 * Add license file at root and in msgs package (`#594 <https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/issues/594>`_)

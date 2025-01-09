@@ -1,14 +1,20 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.0.2)
 project(ur_robot_driver)
 
 add_definitions( -DROS_BUILD )
 
-# if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
-#   message("${PROJECT_NAME}: You did not request a specific build type: selecting 'RelWithDebInfo'.")
-#   set(CMAKE_BUILD_TYPE RelWithDebInfo)
-# endif()
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+  message("${PROJECT_NAME}: You did not request a specific build type: selecting 'RelWithDebInfo'.")
+  set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
 
-set(CMAKE_BUILD_TYPE Release)
+# Default to off as this only works in environments where a new docker container can be started with the appropriate networking, which
+# might not be possible e.g. inside the buildfarm
+option(
+  UR_ROBOT_DRIVER_BUILD_INTEGRATION_TESTS
+  "Build integration tests using the start_ursim script"
+  OFF
+)
 
 find_package(catkin REQUIRED
   COMPONENTS
@@ -34,20 +40,9 @@ find_package(catkin REQUIRED
     ur_msgs
     pass_through_controllers
     kdl_parser
-    rpwc_msgs
-    message_generation
 )
 find_package(Boost REQUIRED)
 find_package(ur_client_library REQUIRED)
-
-# add_service_files(
-#   FILES
-# )
-
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-)
 
 catkin_package(
   INCLUDE_DIRS
@@ -81,8 +76,6 @@ catkin_package(
     Boost
     ur_client_library
 )
-
-
 
 add_compile_options(-Wall)
 add_compile_options(-Wextra)
@@ -142,7 +135,9 @@ target_link_libraries(controller_stopper_node
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
 
-  add_rostest(test/driver.test)
+  if(${UR_ROBOT_DRIVER_BUILD_INTEGRATION_TESTS})
+    add_rostest(test/driver.test)
+  endif()
 endif()
 
 
@@ -167,7 +162,3 @@ install(DIRECTORY include/${PROJECT_NAME}/
 install(FILES hardware_interface_plugin.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-
-add_executable(ur_interface_node src/main_ur_interface.cpp)
-add_dependencies(ur_interface_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(ur_interface_node ${catkin_LIBRARIES} )

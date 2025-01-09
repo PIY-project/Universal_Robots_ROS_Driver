@@ -38,6 +38,7 @@
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_srvs/Trigger.h>
+#include <std_srvs/SetBool.h>
 #include <realtime_tools/realtime_publisher.h>
 #include <tf2_msgs/TFMessage.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -50,11 +51,13 @@
 #include <ur_client_library/control/trajectory_point_interface.h>
 #include <ur_msgs/IOStates.h>
 #include <ur_msgs/ToolDataMsg.h>
+#include <ur_msgs/SetAnalogOutput.h>
 #include <ur_msgs/SetIO.h>
 #include <ur_msgs/SetSpeedSliderFraction.h>
 #include <ur_msgs/SetPayload.h>
-#include <std_srvs/SetBool.h>
-#include <std_srvs/Trigger.h>
+#include <ur_msgs/GetRobotSoftwareVersion.h>
+#include <ur_msgs/set_control_to_freedrive.h>
+
 
 #include <cartesian_interface/cartesian_command_interface.h>
 #include <cartesian_interface/cartesian_state_handle.h>
@@ -70,6 +73,11 @@
 
 #include <industrial_robot_status_interface/industrial_robot_status_interface.h>
 #include <kdl/frames.hpp>
+
+#include <controller_manager_msgs/UnloadController.h>
+#include <controller_manager_msgs/LoadController.h>
+#include <controller_manager_msgs/SwitchController.h>
+#include <controller_manager_msgs/ListControllers.h>
 
 namespace ur_driver
 {
@@ -211,15 +219,20 @@ protected:
 
   bool setSpeedSlider(ur_msgs::SetSpeedSliderFractionRequest& req, ur_msgs::SetSpeedSliderFractionResponse& res);
   bool setIO(ur_msgs::SetIORequest& req, ur_msgs::SetIOResponse& res);
+  bool setAnalogOutput(ur_msgs::SetAnalogOutputRequest& req, ur_msgs::SetAnalogOutputResponse& res);
   bool resendRobotProgram(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
   bool zeroFTSensor(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
   void commandCallback(const std_msgs::StringConstPtr& msg);
   bool setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::SetPayloadResponse& res);
-  bool setFreedrive(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res);
-  bool getLastStartedCtrl(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
-  bool flag_first_controller_started(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
+  bool activateSplineInterpolation(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res);
+  bool getRobotSoftwareVersion(ur_msgs::GetRobotSoftwareVersionRequest& req,
+                               ur_msgs::GetRobotSoftwareVersionResponse& res);
 
+  std::vector<std::string> getControllersRunning();
+  void switchControllers(std::vector<std::string>& controllers_to_start, std::vector<std::string>& controllers_to_stop, int strictness, bool start_asap, int timeout);
+  bool setControlToFreeDriveSrv(ur_msgs::set_control_to_freedriveRequest& req, ur_msgs::set_control_to_freedriveResponse& res);
 
+  std::vector<std::string> controllers_running_before_free_drive_;
 
   std::unique_ptr<urcl::UrDriver> ur_driver_;
   std::unique_ptr<DashboardClientROS> dashboard_client_;
@@ -244,8 +257,11 @@ protected:
   ros::ServiceServer tare_sensor_srv_;
   ros::ServiceServer set_payload_srv_;
   ros::ServiceServer set_freedrive_srv_;
-  ros::ServiceServer get_last_started_ctrl_srv_;
-  ros::ServiceServer flag_first_controller_started_srv_;
+  ros::ServiceServer activate_spline_interpolation_srv_;
+  ros::ServiceServer get_robot_software_version_srv;
+  ros::ServiceClient client_list_controllers_;
+  ros::ServiceClient client_switch_controllers_;
+  
 
   hardware_interface::JointStateInterface js_interface_;
   scaled_controllers::ScaledPositionJointInterface spj_interface_;
@@ -322,6 +338,7 @@ protected:
 
   ros::ServiceServer set_speed_slider_srv_;
   ros::ServiceServer set_io_srv_;
+  ros::ServiceServer set_analog_output_srv_;
   ros::ServiceServer resend_robot_program_srv_;
   ros::Subscriber command_sub_;
 
@@ -336,6 +353,7 @@ protected:
   std::atomic<bool> twist_controller_running_;
   std::atomic<bool> pose_controller_running_;
   std::atomic<bool> freedrive_running_;
+  std::atomic<bool> use_spline_interpolation_;
 
   PausingState pausing_state_;
   double pausing_ramp_up_increment_;
@@ -352,8 +370,6 @@ protected:
 
   std::string robot_ip_;
   std::string tf_prefix_;
-  std::string last_started_controller_;
-  bool flag_first_controller_started_;
 };
 
 }  // namespace ur_driver

@@ -15,7 +15,7 @@ from ur_dashboard_msgs.msg import SetModeAction, SetModeGoal, RobotMode
 from std_srvs.srv import Trigger, TriggerRequest
 import tf
 from trajectory_msgs.msg import JointTrajectoryPoint
-from ur_msgs.srv import SetIO, SetIORequest
+from ur_msgs.srv import SetIO, SetIORequest, GetRobotSoftwareVersion
 from ur_msgs.msg import IOStates
 
 from cartesian_control_msgs.msg import (
@@ -53,42 +53,45 @@ class IntegrationTest(unittest.TestCase):
         """Make sure the robot is booted and ready to receive commands"""
 
         rospy.init_node('ur_robot_driver_integration_test')
+        # In CI we pull the docker image when this test is started. So, we wait a little longer for
+        # the first service...
+        initial_timeout = rospy.Duration(300)
         timeout = rospy.Duration(30)
 
         self.set_mode_client = actionlib.SimpleActionClient(
             '/ur_hardware_interface/set_mode', SetModeAction)
-        if not self.set_mode_client.wait_for_server(timeout):
+        if not self.set_mode_client.wait_for_server(initial_timeout):
             self.fail(
                 "Could not reach set_mode action. Make sure that the driver is actually running."
-                " Msg: {}".format(err))
+            )
 
         self.trajectory_client = actionlib.SimpleActionClient(
             'follow_joint_trajectory', FollowJointTrajectoryAction)
         if not self.trajectory_client.wait_for_server(timeout):
             self.fail(
                 "Could not reach controller action. Make sure that the driver is actually running."
-                " Msg: {}".format(err))
+            )
 
         self.cartesian_passthrough_trajectory_client = actionlib.SimpleActionClient(
             'forward_cartesian_trajectory', FollowCartesianTrajectoryAction)
         if not self.cartesian_passthrough_trajectory_client.wait_for_server(timeout):
             self.fail(
                 "Could not reach cartesian passthrough controller action. Make sure that the driver is actually running."
-                " Msg: {}".format(err))
+            )
 
         self.joint_passthrough_trajectory_client = actionlib.SimpleActionClient(
             'forward_joint_trajectory', FollowJointTrajectoryAction)
         if not self.joint_passthrough_trajectory_client.wait_for_server(timeout):
             self.fail(
                 "Could not reach joint passthrough controller action. Make sure that the driver is actually running."
-                " Msg: {}".format(err))
+            )
 
         self.cartesian_trajectory_client = actionlib.SimpleActionClient(
             'follow_cartesian_trajectory', FollowCartesianTrajectoryAction)
         if not self.cartesian_trajectory_client.wait_for_server(timeout):
             self.fail(
                 "Could not reach cartesian controller action. Make sure that the driver is actually running."
-                " Msg: {}".format(err))
+            )
 
         self.set_io_client = rospy.ServiceProxy('/ur_hardware_interface/set_io', SetIO)
         try:
@@ -115,6 +118,14 @@ class IntegrationTest(unittest.TestCase):
             self.fail(
                 "Could not reach resend_robot_program service. Make sure that the driver is "
                 "actually running in headless mode."
+                " Msg: {}".format(err))
+
+        self.get_robot_software_version = rospy.ServiceProxy("ur_hardware_interface/get_robot_software_version", GetRobotSoftwareVersion)
+        try:
+            self.get_robot_software_version.wait_for_service(timeout)
+        except rospy.exceptions.ROSException as err:
+            self.fail(
+                "Could not reach 'get version' service. Make sure that the driver is actually running."
                 " Msg: {}".format(err))
 
         self.script_publisher = rospy.Publisher("/ur_hardware_interface/script_command", std_msgs.msg.String, queue_size=1)
@@ -317,6 +328,7 @@ class IntegrationTest(unittest.TestCase):
         for i, position in enumerate(position_list):
             point = JointTrajectoryPoint()
             point.positions = position
+            point.velocities = [0, 0, 0, 0, 0, 0]
             point.time_from_start = rospy.Duration(duration_list[i])
             goal.trajectory.points.append(point)
         for i, joint_name in enumerate(goal.trajectory.joint_names):

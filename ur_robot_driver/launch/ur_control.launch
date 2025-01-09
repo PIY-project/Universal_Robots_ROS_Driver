@@ -18,7 +18,7 @@
   <arg name="tf_prefix" default="" doc="tf_prefix used for the robot."/>
   <arg name="controllers" default="joint_state_controller scaled_pos_joint_traj_controller force_torque_sensor_controller robot_status_controller"/>
   <arg name="stopped_controllers" default="joint_group_vel_controller forward_joint_traj_controller forward_cartesian_traj_controller"/>
-  <arg name="urscript_file" doc="Path to URScript that will be sent to the robot and that forms the main control program."/>
+  <arg name="urscript_file"  doc="Path to URScript that will be sent to the robot and that forms the main control program."/>
   <arg name="rtde_output_recipe_file" default="$(find ur_robot_driver)/resources/rtde_output_recipe.txt" doc="Recipe file used for the RTDE-outputs. Only change this if you know what you're doing."/>
   <arg name="rtde_input_recipe_file" default="$(find ur_robot_driver)/resources/rtde_input_recipe.txt" doc="Recipe file used for the RTDE-inputs. Only change this if you know what you're doing."/>
   <arg name="tool_voltage" default="0" doc="Tool voltage set at the beginning of the UR program. Only used, when `use_tool_communication` is set to true."/>
@@ -33,6 +33,7 @@
   <arg name="servoj_gain" default="2000" doc="Specify gain for servoing to position in joint space. A higher gain can sharpen the trajectory."/>
   <arg name="servoj_lookahead_time" default="0.03" doc="Specify lookahead time for servoing to position in joint space. A longer lookahead time can smooth the trajectory."/>
   <arg name="ur_hardware_interface_node_required" default="true" doc="Shut down ros environment if ur_hardware_interface-node dies."/>
+  <arg name="use_spline_interpolation" default="true" doc="True if splines should be used as interpolation on the robot controller when forwarding trajectory, if false movej or movel commands are used"/>
 
   <!-- Load hardware interface -->
   <node name="ur_hardware_interface" pkg="ur_robot_driver" type="ur_robot_driver_node" output="screen" launch-prefix="$(arg launch_prefix)" required="$(arg ur_hardware_interface_node_required)">
@@ -58,10 +59,11 @@
     <param name="tool_tx_idle_chars" value="$(arg tool_tx_idle_chars)"/>
     <param name="servoj_gain" value="$(arg servoj_gain)"/>
     <param name="servoj_lookahead_time" value="$(arg servoj_lookahead_time)"/>
+    <param name="use_spline_interpolation" value="$(arg use_spline_interpolation)"/>
   </node>
 
   <!-- Starts socat to bridge the robot's tool communication interface to a local tty device -->
-  <node if="$(arg use_tool_communication)" name="ur_tool_communication_bridge" pkg="ur_robot_driver" type="tool_communication" respawn="false" output="screen" >
+  <node if="$(arg use_tool_communication)" name="ur_tool_communication_bridge" pkg="ur_robot_driver" type="tool_communication" respawn="false" output="screen">
     <param name="robot_ip" value="$(arg robot_ip)"/>
     <param name="reverse_ip" value="$(arg reverse_ip)"/>
     <param name="reverse_port" type="int" value="$(arg reverse_port)"/>
@@ -75,11 +77,11 @@
 
   <!-- spawn controller manager -->
   <node name="ros_control_controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
-    output="screen" args="$(arg controllers)" />
+    output="screen" args="$(arg controllers) --timeout 600" />
 
   <!-- load other controller -->
   <node name="ros_control_stopped_spawner" pkg="controller_manager" type="spawner" respawn="false"
-    output="screen" args="--stopped $(arg stopped_controllers)" unless="$(eval arg('stopped_controllers') == '')"/>
+    output="screen" args="--stopped $(arg stopped_controllers) --timeout 600" unless="$(eval arg('stopped_controllers') == '')"/>
 
   <node name="controller_stopper" pkg="ur_robot_driver" type="controller_stopper_node" respawn="false" output="screen">
     <remap from="robot_running" to="ur_hardware_interface/robot_program_running"/>
