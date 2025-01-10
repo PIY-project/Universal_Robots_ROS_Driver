@@ -1,0 +1,10 @@
+<library path="lib/libur_controllers">
+
+  <class name="ur_controllers/JointPositionOneTaskInvKin" type="ur_controllers::JointPositionOneTaskInvKin" base_class_type="controller_interface::ControllerBase">
+    <description>
+      A controller that executes a short motion based on joint positions to demonstrate correct usage
+    </description>
+  </class>
+
+
+</library>

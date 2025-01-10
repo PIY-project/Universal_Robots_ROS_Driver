@@ -27,10 +27,24 @@
   <arg name="use_spline_interpolation" default="true" doc="True if splines should be used as interpolation on the robot controller when forwarding trajectory, if false movej or movel commands are used"/>
   <arg name="urscript_file" doc="Path to URScript that will be sent to the robot and that forms the main control program."/>
   <arg name="prefix" default="" doc="tf_prefix used for the robot."/>
+  <arg name="x_pos_EE" default="0"/>
+	<arg name="y_pos_EE" default="0"/>
+	<arg name="z_pos_EE" default="0"/>
+	<arg name="roll_EE" default="0"/>
+	<arg name="pitch_EE" default="0"/>
+	<arg name="yaw_EE" default="0"/>
+
   <!-- robot model -->
   <include file="$(arg robot_description_file)">
     <arg name="kinematics_params" value="$(arg kinematics_config)"/>
     <arg name="prefix" value="$(arg prefix)"/>
+    <arg name="x_pos_EE" value="$(arg x_pos_EE)"/>
+    <arg name="y_pos_EE" value="$(arg y_pos_EE)"/>
+    <arg name="z_pos_EE" value="$(arg z_pos_EE)"/>
+    <arg name="roll_EE" value="$(arg roll_EE)"/>
+    <arg name="pitch_EE" value="$(arg pitch_EE)"/>
+    <arg name="yaw_EE" value="$(arg yaw_EE)"/>
+
   </include>
 
   <!-- Convert joint states to /tf tranforms -->

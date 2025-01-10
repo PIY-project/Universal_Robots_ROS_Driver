@@ -474,6 +474,9 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   client_list_controllers_ = robot_hw_nh.serviceClient<controller_manager_msgs::ListControllers> (ros::this_node::getNamespace() + "/controller_manager/list_controllers");
   client_switch_controllers_ = robot_hw_nh.serviceClient<controller_manager_msgs::SwitchController>(ros::this_node::getNamespace() + "/controller_manager/switch_controller");
 
+  // // inizializzare le joint joint_position_command_ con quelle lette
+  resetJointCommand();
+  
   return true;
 }
 
@@ -828,18 +831,22 @@ void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerI
       {
         if (resource_it.hardware_interface == "scaled_controllers::ScaledPositionJointInterface")
         {
+          resetJointCommand();
           position_controller_running_ = true;
         }
         if (resource_it.hardware_interface == "hardware_interface::PositionJointInterface")
         {
+          resetJointCommand();
           position_controller_running_ = true;
         }
         if (resource_it.hardware_interface == "scaled_controllers::ScaledVelocityJointInterface")
         {
+          resetJointCommand();
           velocity_controller_running_ = true;
         }
         if (resource_it.hardware_interface == "hardware_interface::VelocityJointInterface")
         {
+          resetJointCommand();
           velocity_controller_running_ = true;
         }
         if (resource_it.hardware_interface == "hardware_interface::TrajectoryInterface<control_msgs::"
@@ -1532,6 +1539,22 @@ void HardwareInterface::passthroughTrajectoryDoneCb(urcl::control::TrajectoryRes
   else
   {
     ROS_ERROR_STREAM("Received forwarded trajectory result with no forwarding controller running.");
+  }
+}
+
+bool HardwareInterface::resetJointCommand()
+{
+  std::unique_ptr<rtde::DataPackage> data_pkg = ur_driver_->getDataPackage();
+  if(data_pkg)
+  {
+    readData(data_pkg, "actual_q", joint_position_command_);
+    for(int i = 0; i < joint_velocity_command_.size(); i++)joint_velocity_command_[i] = 0;
+    return true;
+  }
+  else
+  {
+    ROS_ERROR_STREAM("NON È STATO POSSIBILE INIZIALIZZARE joint_position_command_");
+    return false;
   }
 }
 }  // namespace ur_driver

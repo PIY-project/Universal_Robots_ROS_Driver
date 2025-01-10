@@ -118,6 +118,40 @@ catkin_package(
     roscpp
 )
 
+
+add_library(ur_controllers
+  src/joint_position_one_task_inv_kin.cpp
+)
+
+target_link_libraries(ur_controllers PUBLIC
+  ${catkin_LIBRARIES}
+)
+
+target_include_directories(ur_controllers SYSTEM PUBLIC
+  ${EIGEN3_INCLUDE_DIRS}
+  ${catkin_INCLUDE_DIRS}
+)
+target_include_directories(ur_controllers PUBLIC
+  include
+)
+
+## Installation
+install(TARGETS ur_controllers
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+install(DIRECTORY launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+install(DIRECTORY config
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+install(FILES ur_controllers_plugin.xml
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+
 ###########
 ## Build ##
 ###########

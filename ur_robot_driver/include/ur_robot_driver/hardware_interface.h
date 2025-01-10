@@ -253,6 +253,8 @@ protected:
 
   void passthroughTrajectoryDoneCb(urcl::control::TrajectoryResult result);
 
+  bool resetJointCommand();
+
   ros::ServiceServer deactivate_srv_;
   ros::ServiceServer tare_sensor_srv_;
   ros::ServiceServer set_payload_srv_;

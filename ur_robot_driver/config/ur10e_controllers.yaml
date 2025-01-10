@@ -164,3 +164,10 @@ robot_status_controller:
    type: industrial_robot_status_controller/IndustrialRobotStatusController
    handle_name: industrial_robot_status_handle
    publish_rate: 10
+
+joint_position_one_task_inv_kin:
+    type: ur_controllers/JointPositionOneTaskInvKin
+    joints: *robot_joints
+    inv_kin_gain:
+        pos: 200
+        rot: 20

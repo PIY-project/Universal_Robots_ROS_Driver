@@ -22,19 +22,21 @@ bool JointPositionOneTaskInvKin::init(hardware_interface::RobotHW* robot_hardwar
     int n = name_space_.find("joint_position_one_task_inv_kin");
     name_space_ = name_space_.substr(0,n);
 
-    if (!node_handle.getParam(name_space_ + "/robot_hw_control_loop/loop_hz", loop_hz_)) {
+    if (!node_handle.getParam(name_space_ + "/hardware_control_loop/loop_hz", loop_hz_)) {
       ROS_ERROR("JointPositionOneTaskInvKin: Could not parse robot_hw_control_loop/loop_hz");
-      return false;
+      node_handle.shutdown();
     }
 
     if (!node_handle.getParam(name_space_ + "/root_name", root_name_))
     {
         ROS_ERROR_STREAM("OneTaskInvKin: No root name found on parameter server ("<<node_handle.getNamespace()<<"/root_name)");
+        node_handle.shutdown();
     }
 
     if (!node_handle.getParam(name_space_ + "/tip_name", tip_name_))
     {
         ROS_ERROR_STREAM("OneTaskInvKin: No tip name found on parameter server ("<<node_handle.getNamespace()<<"/tip_name)");
+        node_handle.shutdown();
     }
 
     
@@ -144,14 +146,14 @@ bool JointPositionOneTaskInvKin::init(hardware_interface::RobotHW* robot_hardwar
   if (position_joint_interface_ == nullptr) {
     ROS_ERROR(
         "JointPositionOneTaskInvKin: Error getting position joint interface from hardware!");
-    return false;
+    node_handle.shutdown();
   }
 
   // velocity_joint_interface_ = robot_hardware->get<hardware_interface::VelocityJointInterface>();
   // if (velocity_joint_interface_ == nullptr) {
   //   ROS_ERROR(
   //       "JointPositionOneTaskInvKin: Error getting velocity joint interface from hardware!");
-  //   return false;
+  //   node_handle.shutdown();
   // }
 
 
@@ -160,19 +162,19 @@ bool JointPositionOneTaskInvKin::init(hardware_interface::RobotHW* robot_hardwar
   double inv_kin_gain_rot;
   if (!node_handle.getParam("inv_kin_gain/pos", inv_kin_gain_pos)) {
     ROS_ERROR("JointPositionOneTaskInvKin: Could not parse inv_kin_gain/pos");
-    return false;
+    node_handle.shutdown();
   }
 
   if (!node_handle.getParam("inv_kin_gain/rot", inv_kin_gain_rot)) {
     ROS_ERROR("JointPositionOneTaskInvKin: Could not parse inv_kin_gain/rot");
-    return false;
+    node_handle.shutdown();
   }
 
 
   std::vector<std::string> joint_names;
   if (!node_handle.getParam("joints", joint_names)) {
     ROS_ERROR("JointPositionOneTaskInvKin: Could not parse joint names");
-    return false;
+    node_handle.shutdown();
   }
 
 
@@ -180,7 +182,7 @@ bool JointPositionOneTaskInvKin::init(hardware_interface::RobotHW* robot_hardwar
   if (joint_names.size() != num_of_joints_) {
     ROS_ERROR_STREAM("JointPositionOneTaskInvKin: Wrong number of joint names, got "
                      << joint_names.size() << " instead of 7 names!");
-    return false;
+    node_handle.shutdown();
   }
   position_joint_handles_.resize(num_of_joints_);
   // velocity_joint_handles_.resize(num_of_joints_);
@@ -191,7 +193,7 @@ bool JointPositionOneTaskInvKin::init(hardware_interface::RobotHW* robot_hardwar
     } catch (const hardware_interface::HardwareInterfaceException& e) {
       ROS_ERROR_STREAM(
           "JointPositionOneTaskInvKin: Exception getting joint handles: " << e.what());
-      return false;
+      node_handle.shutdown();
     }
   }
 
@@ -243,7 +245,6 @@ void JointPositionOneTaskInvKin::starting(const ros::Time& /* time */) {
 	}
 	quat_d_ = orient_d;
 	quat_d_.normalize();
-
 }
 
 void JointPositionOneTaskInvKin::fwdKin(KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old)
@@ -285,7 +286,7 @@ void JointPositionOneTaskInvKin::fwdKin(KDL::JntArray q, bool &first_quat, Eigen
 
 void JointPositionOneTaskInvKin::update(const ros::Time& /*time*/,
                                             const ros::Duration& period) {
-
+  
   Eigen::Vector3d pos, e_pos, e_quat;
 	Eigen::Matrix3d skew;
 	Eigen::MatrixXd Jac, Jac_pinv;
@@ -337,15 +338,15 @@ void JointPositionOneTaskInvKin::update(const ros::Time& /*time*/,
 
 	q_des_ += qdot * period.toSec();
 
-	for (int i = 0; i < num_of_joints_; i++)
-	{
-    // joint limits saturation
-    if (q_des_(i) < joint_limits_.min(i)) q_des_(i) = joint_limits_.min(i);
-    if (q_des_(i) > joint_limits_.max(i)) q_des_(i) = joint_limits_.max(i);
-		q_(i) = q_des_(i);
-    position_joint_handles_[i].setCommand(q_(i));
-    // velocity_joint_handles_[i].setCommand(qdot(i));
-	}
+	// for (int i = 0; i < num_of_joints_; i++)
+	// {
+  //   // joint limits saturation
+  //   if (q_des_(i) < joint_limits_.min(i)) q_des_(i) = joint_limits_.min(i);
+  //   if (q_des_(i) > joint_limits_.max(i)) q_des_(i) = joint_limits_.max(i);
+	// 	q_(i) = q_des_(i);
+  //   position_joint_handles_[i].setCommand(q_(i));
+  //   // velocity_joint_handles_[i].setCommand(qdot(i));
+	// }
 
 }
 
