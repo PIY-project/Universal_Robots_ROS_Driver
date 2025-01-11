@@ -18,5 +18,12 @@
     Refer to 'inc/ur_macro.xacro' for more information.
   -->
   <xacro:include filename="$(find ur_description)/urdf/inc/ur3_macro.xacro"/>
-  <xacro:ur3_robot prefix="" />
+  <xacro:ur3_robot prefix=""
+                    x_pos_EE="0"
+                    y_pos_EE="0"
+                    z_pos_EE="0"
+                    roll_EE="0"
+                    pitch_EE="0"
+                    yaw_EE="0"
+  />
 </robot>

@@ -1,0 +1,13 @@
+controller_list:
+  - name: fake_ur10e_arm_controller
+    type: $(arg fake_execution_type)
+    joints:
+      - $(arg prefix)shoulder_pan_joint
+      - $(arg prefix)shoulder_lift_joint
+      - $(arg prefix)elbow_joint
+      - $(arg prefix)wrist_1_joint
+      - $(arg prefix)wrist_2_joint
+      - $(arg prefix)wrist_3_joint
+initial:  # Define initial robot poses per group
+  - group: ur10e_arm
+    pose: home
