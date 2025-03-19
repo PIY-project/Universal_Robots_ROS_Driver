@@ -338,15 +338,15 @@ void JointPositionOneTaskInvKin::update(const ros::Time& /*time*/,
 
 	q_des_ += qdot * period.toSec();
 
-	// for (int i = 0; i < num_of_joints_; i++)
-	// {
-  //   // joint limits saturation
-  //   if (q_des_(i) < joint_limits_.min(i)) q_des_(i) = joint_limits_.min(i);
-  //   if (q_des_(i) > joint_limits_.max(i)) q_des_(i) = joint_limits_.max(i);
-	// 	q_(i) = q_des_(i);
-  //   position_joint_handles_[i].setCommand(q_(i));
-  //   // velocity_joint_handles_[i].setCommand(qdot(i));
-	// }
+	for (int i = 0; i < num_of_joints_; i++)
+	{
+    // joint limits saturation
+    if (q_des_(i) < joint_limits_.min(i)) q_des_(i) = joint_limits_.min(i);
+    if (q_des_(i) > joint_limits_.max(i)) q_des_(i) = joint_limits_.max(i);
+		q_(i) = q_des_(i);
+    position_joint_handles_[i].setCommand(q_(i));
+    // velocity_joint_handles_[i].setCommand(qdot(i));
+	}
 
 }
 
