@@ -3,19 +3,7 @@
     <xacro:arg name="prefix" default=""/>
     <!-- GROUPS -->
     <group name="ur10e_arm">
-        <joint name="$(arg prefix)virtual_joint"/>
-        <joint name="$(arg prefix)base_link-base_fixed_joint"/>
-        <joint name="$(arg prefix)base_link-base_link_inertia"/>
-        <joint name="$(arg prefix)shoulder_pan_joint"/>
-        <joint name="$(arg prefix)shoulder_lift_joint"/>
-        <joint name="$(arg prefix)elbow_joint"/>
-        <joint name="$(arg prefix)wrist_1_joint"/>
-        <joint name="$(arg prefix)wrist_2_joint"/>
-        <joint name="$(arg prefix)wrist_3_joint"/>
-        <joint name="$(arg prefix)wrist_3-flange"/>
-        <joint name="$(arg prefix)flange-rpwc_last_robot_link"/>
-        <joint name="$(arg prefix)rpwc_last_robot_link-rpwc_EE"/>
-        <joint name="$(arg prefix)flange-tool0"/>
+        <chain base_link="$(arg prefix)base_link" tip_link="$(arg prefix)rpwc_EE"/>
     </group>
 
     <!-- GROUP STATES -->
