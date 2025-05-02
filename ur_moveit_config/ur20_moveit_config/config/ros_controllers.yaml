@@ -1,0 +1,40 @@
+arm_position_controller:
+  type: effort_controllers/JointTrajectoryController
+  joints:
+    - $(arg prefix)shoulder_pan_joint
+    - $(arg prefix)shoulder_lift_joint
+    - $(arg prefix)elbow_joint
+    - $(arg prefix)wrist_1_joint
+    - $(arg prefix)wrist_2_joint
+    - $(arg prefix)wrist_3_joint
+  gains:
+    $(arg prefix)shoulder_pan_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
+    $(arg prefix)shoulder_lift_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
+    $(arg prefix)elbow_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
+    $(arg prefix)wrist_1_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
+    $(arg prefix)wrist_2_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
+    $(arg prefix)wrist_3_joint:
+      p: 100
+      d: 1
+      i: 1
+      i_clamp: 1
