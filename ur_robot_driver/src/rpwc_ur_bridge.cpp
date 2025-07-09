@@ -36,11 +36,14 @@
 
 #include <thread>
 
+#define CONTROLLER_0_NAME "joint_position_one_task_inv_kin"
+#define CONTROLLER_1_NAME "scaled_pos_joint_traj_controller"
+
 ros::NodeHandle* node_handle_;
 std::string name_space_, root_name_, tip_name_;
 double dt_pub_pose_;
 int num_of_joints_;
-int last_controller_started_;
+int last_controller_started_, last_actual_controller_started_;
 bool first_quat_msr_, flag_joint_msr_;
 std::vector<int> joints_order_= {2, 1, 0, 3, 4, 5};
 Eigen::Quaterniond quat_old_msr_;
@@ -108,14 +111,14 @@ bool callback_set_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs:
 	{
 		case 0:
 		{
-			ROS_INFO("START joint_position_one_task_inv_kin CONTROLLER");
+			ROS_INFO_STREAM("START " << CONTROLLER_0_NAME <<" CONTROLLER");
 
       if(last_controller_started_ == 2) //freedrive
       {
         //client set to egm con specifico controllore joint_position_one_task_inv_kin
         ur_msgs::set_control_to_freedrive srv_set_control;
         srv_set_control.request.set_freedrive = false;
-        srv_set_control.request.controller_name = "joint_position_one_task_inv_kin";
+        srv_set_control.request.controller_name = CONTROLLER_0_NAME;
         if(!client_set_control_to_free_drive_.call(srv_set_control))
         {
           ROS_ERROR("Failed to call service client_set_control_to_free_drive_");
@@ -137,24 +140,26 @@ bool callback_set_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs:
         }
 
         std::vector<std::string> controllers_to_start;
-        controllers_to_start.push_back("joint_position_one_task_inv_kin");
+        controllers_to_start.push_back(CONTROLLER_0_NAME);
 
         SwitchControllers(controllers_to_start, controllers_to_stop, 2, false, 0.0);
       }
+      last_controller_started_ = req.controller;
+      last_actual_controller_started_ = req.controller;
 
 			break;
 		}
 
 		case 1:
 		{
-			ROS_INFO("START PositionControllers_JointTrajectoryController CONTROLLER");
+			ROS_INFO_STREAM("START " << CONTROLLER_1_NAME << " CONTROLLER");
 
       if(last_controller_started_ == 2) //freedrive
       {
         //client set to egm con specifico controllore joint_position_one_task_inv_kin
         ur_msgs::set_control_to_freedrive srv_set_control;
         srv_set_control.request.set_freedrive = false;
-        srv_set_control.request.controller_name = "scaled_pos_joint_traj_controller";
+        srv_set_control.request.controller_name = CONTROLLER_1_NAME;
         if(!client_set_control_to_free_drive_.call(srv_set_control))
         {
           ROS_ERROR("Failed to call service client_set_control_to_free_drive_");
@@ -176,11 +181,13 @@ bool callback_set_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs:
         }
 
         std::vector<std::string> controllers_to_start;
-        controllers_to_start.push_back("scaled_pos_joint_traj_controller");
+        controllers_to_start.push_back(CONTROLLER_1_NAME);
 
         SwitchControllers(controllers_to_start, controllers_to_stop, 2, false, 0.0);
       }
-			
+      last_controller_started_ = req.controller;
+      last_actual_controller_started_ = req.controller;
+
 			break;
 		}
 
@@ -196,15 +203,42 @@ bool callback_set_controller(rpwc_msgs::setController::Request  &req, rpwc_msgs:
         res.result.data = false;
         return true;
       }
-			
+      last_controller_started_ = req.controller;
+
 			break;
 		}
 
-		default:
-			break;
+    case 99:
+    {
+      ROS_INFO("STOP LEAD-THROUGH & START LAST CONTROLLER");
+
+      ROS_INFO("Start last controller");
+      if(last_controller_started_ != 2)
+      {
+        ROS_INFO("LEAD-THROUGH ALREADY STOPPED");
+        break;
+      }
+
+      ur_msgs::set_control_to_freedrive srv_set_control;
+      srv_set_control.request.set_freedrive = false;
+      
+      if (last_actual_controller_started_ == 0)
+        srv_set_control.request.controller_name = CONTROLLER_0_NAME;
+      else if (last_actual_controller_started_ == 1)
+        srv_set_control.request.controller_name = CONTROLLER_1_NAME;
+
+      if(!client_set_control_to_free_drive_.call(srv_set_control))
+      {
+        ROS_ERROR("Failed to call service client_set_control_to_free_drive_");
+        res.result.data = false;
+        return true;
+      }
+      last_controller_started_ = last_actual_controller_started_;
+
+      break;
+    }
 	}
 
-	last_controller_started_ = req.controller;
   res.result.data = true;
 	return true;
 }
@@ -227,9 +261,9 @@ void callback_joint_states(const sensor_msgs::JointState::ConstPtr &msg)
 
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request  &req, rpwc_msgs::robotArmState::Response &res)
 {
-	res.pose.pose = curr_pose_.pose;
-	res.pose.header.frame_id = curr_pose_.header.frame_id;
-	res.pose.header.stamp = ros::Time::now();
+	res.poseBaseToEe.pose = curr_pose_.pose;
+	res.poseBaseToEe.header.frame_id = curr_pose_.header.frame_id;
+	res.poseBaseToEe.header.stamp = ros::Time::now();
 	for(int i = 0; i < q_msr_.rows(); i++)
 	{
 		std_msgs::Float32 tmp;
