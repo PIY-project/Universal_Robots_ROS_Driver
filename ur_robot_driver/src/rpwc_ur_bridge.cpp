@@ -342,7 +342,7 @@ void threadPubRobPose()
 }
 
 int main(int argc, char** argv){
-  ros::init(argc, argv, "rpwc_omnicore_bridge");
+  ros::init(argc, argv, "rpwc_ur_bridge");
 
   node_handle_ = new(ros::NodeHandle);
 
@@ -365,17 +365,17 @@ int main(int argc, char** argv){
 
   if (!node_handle_->getParam("root_name", root_name_))
   {
-      ROS_ERROR_STREAM("rpwc_omnicore_bridge: No root name found on parameter server ("<<name_space_<<"/root_name)");
+      ROS_ERROR_STREAM("rpwc_ur_bridge: No root name found on parameter server ("<<name_space_<<"/root_name)");
   }
 
   if (!node_handle_->getParam("tip_name", tip_name_))
   {
-      ROS_ERROR_STREAM("rpwc_omnicore_bridge: No tip name found on parameter server ("<<name_space_<<"/tip_name)");
+      ROS_ERROR_STREAM("rpwc_ur_bridge: No tip name found on parameter server ("<<name_space_<<"/tip_name)");
   }
 
   if (!node_handle_->getParam("dt_pub_pose", dt_pub_pose_))
 	{
-		ROS_ERROR_STREAM("rpwc_omnicore_bridge: No dt_pub_pose name found on parameter server (" << name_space_ << "/dt_pub_pose)");
+		ROS_ERROR_STREAM("rpwc_ur_bridge: No dt_pub_pose name found on parameter server (" << name_space_ << "/dt_pub_pose)");
 	}
   
 
