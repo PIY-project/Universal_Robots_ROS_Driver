@@ -136,6 +136,9 @@ add_executable(rpwc_ur_bridge_node src/rpwc_ur_bridge.cpp)
 add_dependencies(rpwc_ur_bridge_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(rpwc_ur_bridge_node ${catkin_LIBRARIES})
 
+add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp)
+target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl)
+
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
 

@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="prefix" default="setup1/robot1/"/>
+  <arg name="robot_ip" default="192.168.1.112"/>
+  <arg name="rate_rtde_hz" default="50"/>
+  <arg name="root_name" default="base"/>
+  <arg name="tip_name" default="rpwc_EE"/>
+  <arg name="x_pos_EE" default="0"/>
+  <arg name="y_pos_EE" default="0"/>
+  <arg name="z_pos_EE" default="0"/>
+  <arg name="roll_EE" default="0"/>
+  <arg name="pitch_EE" default="0"/>
+  <arg name="yaw_EE" default="0"/>
+  <arg name="controller_config_file" default="$(find ur_robot_driver)/config/ur10e_controllers.yaml"/>
+  <arg name="robot_description_file" default="$(find ur_description)/launch/load_ur10e.launch"/>
+  <arg name="kinematics_config" default="$(find ur_calibration)/param_calib/ur10e_calibration.yaml"/>
+
+  <group ns="$(arg prefix)">
+    <param name="robot_ip" value="$(arg robot_ip)"/>
+    <param name="root_name" value="$(arg prefix)$(arg root_name)"/>
+    <param name="tip_name" value="$(arg prefix)$(arg tip_name)"/>
+    <param name="rate_rtde_hz" value="$(arg rate_rtde_hz)"/>
+
+    <!-- Load joints names from controller config -->
+    <rosparam subst_value="true" file="$(arg controller_config_file)" command="load"/>
+
+    <!-- robot model -->
+    <include file="$(arg robot_description_file)">
+      <arg name="kinematics_params" value="$(arg kinematics_config)"/>
+      <arg name="prefix" value="$(arg prefix)"/>
+      <arg name="x_pos_EE" value="$(arg x_pos_EE)"/>
+      <arg name="y_pos_EE" value="$(arg y_pos_EE)"/>
+      <arg name="z_pos_EE" value="$(arg z_pos_EE)"/>
+      <arg name="roll_EE" value="$(arg roll_EE)"/>
+      <arg name="pitch_EE" value="$(arg pitch_EE)"/>
+      <arg name="yaw_EE" value="$(arg yaw_EE)"/>
+    </include>
+
+    <!-- Convert joint states to /tf tranforms -->
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+
+    <node name="rpwc_ur_bridge_native" pkg="ur_robot_driver" type="rpwc_ur_bridge_native" required="true" output="screen"/>
+  </group>
+</launch>
