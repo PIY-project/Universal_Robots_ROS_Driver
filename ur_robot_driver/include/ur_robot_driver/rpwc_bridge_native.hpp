@@ -123,7 +123,7 @@ private:
 // -----------------------------------------
 
 ros::NodeHandle* nh_;
-std::string name_space_, robot_ip_, root_name_, tip_name_;
+std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_;
 float freq_rtde_hz_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;

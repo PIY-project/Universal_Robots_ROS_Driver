@@ -480,15 +480,22 @@ int main(int argc, char** argv)
 
   if (!nh_->getParam("root_name", root_name_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "No root name found on parameter server (" << name_space_ << "/root_name)");
-    shutdown("Param  missing");
+    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/root_name' not found on param server");
+    shutdown("Param root_name missing");
     return 1;
   }
 
   if (!nh_->getParam("tip_name", tip_name_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "No tip name found on parameter server (" << name_space_ << "/tip_name)");
-    shutdown("Param  missing");
+    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/tip_name' not found on param server");
+    shutdown("Param tip_name missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("urscript_file", urscript_file_path_))
+  {
+    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/urscript_file' not found on param server");
+    shutdown("Param urscript_file missing");
     return 1;
   }
 
@@ -520,7 +527,7 @@ int main(int argc, char** argv)
   ROS_INFO_NAMED(ROSOUT_NAME_MAIN, "Create UR_Driver");
   urcl::UrDriverConfiguration urDriverConfig;
   urDriverConfig.robot_ip = robot_ip_;
-  urDriverConfig.script_file = "/opt/ros/noetic/share/ur_client_library/resources/external_control.urscript";
+  urDriverConfig.script_file = urscript_file_path_;
   urDriverConfig.output_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_output_recipe.txt";
   urDriverConfig.input_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_input_recipe.txt";
   urDriverConfig.headless_mode = true;
