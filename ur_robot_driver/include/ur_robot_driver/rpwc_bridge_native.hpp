@@ -50,9 +50,6 @@
 //                 Defines
 // -----------------------------------------
 
-#define ROSOUT_NAME_MAIN "rpwc_ur_bridge_native"
-#define ROSOUT_NAME_JS_PUB "ur-joint_states-publisher"
-#define ROSOUT_NAME_ROB_POSE_PUB "ur-robot_curr_pose-publisher"
 typedef actionlib::SimpleActionServer<rpwc_msgs::nativeCartesianCommandsAction> CartesianAS;
 typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> JointsAS;
 
@@ -60,13 +57,12 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 //                Functions
 // -----------------------------------------
 
-void wait();
-void handleRobotProgramState(bool program_running);
-void thread_pub_joint_states();
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
-void thread_pub_rob_curr_pose();
 void thread_keep_alive();
+void thread_pub_joint_states();
+void thread_pub_rob_curr_pose();
+void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
 void shutdown(std::string reason);
+void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
 bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses);
 bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses);
@@ -78,7 +74,6 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
 bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::setController::Response& res);
 bool callback_get_controller(rpwc_msgs::getController::Request& req, rpwc_msgs::getController::Response& res);
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs::robotArmState::Response& res);
-// bool callback_move_l(ur_msgs::moveL::Request& req, ur_msgs::moveL::Response& res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -123,7 +118,7 @@ private:
 // -----------------------------------------
 
 ros::NodeHandle* nh_;
-std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_;
+std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
 float freq_rtde_hz_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;

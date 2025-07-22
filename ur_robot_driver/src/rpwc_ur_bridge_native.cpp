@@ -4,26 +4,33 @@
 //                Functions
 // -----------------------------------------
 
-void wait()
+void thread_keep_alive()
 {
-  ROS_WARN("Press ENTER to continue");
-  getchar();
-}
+  ros::Rate rate(freq_rtde_hz_);
+  while(ros::ok())
+  {
+    if (send_command_mutex_.try_lock())
+    {
+      if (freedrive_)
+        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_NOOP);
+      else
+        ur_driver_->writeKeepalive();
 
-void handleRobotProgramState(bool program_running)
-{
-  ROS_INFO_STREAM("ProgamState changed: " << program_running);
+      send_command_mutex_.unlock();
+    }
+    rate.sleep();
+  }
 }
 
 void thread_pub_joint_states()
 {
-  ROS_INFO_NAMED(ROSOUT_NAME_JS_PUB, "Init");
+  ROS_INFO("[joint_states]: Init");
 
   sensor_msgs::JointState msg;
   msg.name.clear();
   if (!nh_->getParam("ur_hardware_interface/joints", msg.name))
   {
-    ROS_FATAL_STREAM_NAMED(ROSOUT_NAME_JS_PUB, "Parameter '" << name_space_ << "/ur_hardware_interface/joints' not found on param server");
+    ROS_FATAL_STREAM("[joint_states]: Parameter '" << name_space_ << "/ur_hardware_interface/joints' not found on param server");
     shutdown("Joint names not found on param server");
     return;
   }
@@ -34,7 +41,8 @@ void thread_pub_joint_states()
   std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg;
   urcl::vector6d_t robData = urcl::vector6d_t();
 
-  ROS_INFO_NAMED(ROSOUT_NAME_JS_PUB, "Start");
+  ROS_INFO("[joint_states]: Start");
+
   while (ros::ok())
   {
     data_pkg = ur_driver_->getDataPackage();
@@ -62,8 +70,69 @@ void thread_pub_joint_states()
     rate.sleep();
   }
 
-  ROS_INFO_NAMED(ROSOUT_NAME_JS_PUB, "Shutting down");
+  ROS_INFO("[joint_states]: Shutting down");
   pub.shutdown();
+}
+
+void thread_pub_rob_curr_pose()
+{
+  ROS_INFO("[robot_curr_pose]: Init");
+
+  Eigen::Vector3d pos_ee_msr, pos_ll_msr;
+  Eigen::Quaterniond quat_ee_msr, quat_ll_msr;
+  first_quat_ee_msr_ = true;
+  first_quat_ll_msr_ = true;
+
+  double dt_pub_pose;
+  nh_->param<double>("dt_pub_pose", dt_pub_pose, 0.02);
+  ros::Rate r_HZ(1.0 / dt_pub_pose);
+
+  ros::Publisher pub = nh_->advertise<rpwc_msgs::RobotArmStateStamped>("rpwc_robot_curr_pose", 1);
+  ros::ServiceServer server_robot_curr_pose = nh_->advertiseService("rpwc_robot_curr_pose", callback_robot_curr_pose);
+  curr_pose_ee_.header.frame_id = root_name_;
+  curr_pose_ll_.header.frame_id = root_name_;
+  rpwc_msgs::RobotArmStateStamped msg;
+  std_msgs::Float32 tmp;
+
+  ROS_INFO("[robot_curr_pose]: Start");
+
+  while(ros::ok())
+  {
+    fwdKin(fk_pos_solver_ee_, q_msr_, first_quat_ee_msr_, pos_ee_msr, quat_ee_msr, quat_ee_old_msr_);
+    curr_pose_ee_.header.stamp = ros::Time::now();
+    curr_pose_ee_.pose.position.x = pos_ee_msr.x();
+    curr_pose_ee_.pose.position.y = pos_ee_msr.y();
+    curr_pose_ee_.pose.position.z = pos_ee_msr.z();
+    curr_pose_ee_.pose.orientation.w = quat_ee_msr.w();
+    curr_pose_ee_.pose.orientation.x = quat_ee_msr.x();
+    curr_pose_ee_.pose.orientation.y = quat_ee_msr.y();
+    curr_pose_ee_.pose.orientation.z = quat_ee_msr.z();
+    fwdKin(fk_pos_solver_ll_, q_msr_, first_quat_ll_msr_, pos_ll_msr, quat_ll_msr, quat_ll_old_msr_);
+    curr_pose_ll_.header.stamp = ros::Time::now();
+    curr_pose_ll_.pose.position.x = pos_ll_msr.x();
+    curr_pose_ll_.pose.position.y = pos_ll_msr.y();
+    curr_pose_ll_.pose.position.z = pos_ll_msr.z();
+    curr_pose_ll_.pose.orientation.w = quat_ll_msr.w();
+    curr_pose_ll_.pose.orientation.x = quat_ll_msr.x();
+    curr_pose_ll_.pose.orientation.y = quat_ll_msr.y();
+    curr_pose_ll_.pose.orientation.z = quat_ll_msr.z();
+
+    msg.poseBaseToEe = curr_pose_ee_;
+    msg.poseBaseToLastLink = curr_pose_ll_;
+    msg.joint_position.clear();
+    for (int i = 0; i < num_of_joints_; i++)
+    {
+      tmp.data = q_msr_(i);
+      msg.joint_position.push_back(tmp);
+    }
+    pub.publish(msg);
+
+    r_HZ.sleep();
+  }
+
+  ROS_INFO("[robot_curr_pose]: Shutting down");
+  pub.shutdown();
+  server_robot_curr_pose.shutdown();
 }
 
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old)
@@ -103,87 +172,15 @@ void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::Jnt
   quat_old = quat;
 }
 
-void thread_pub_rob_curr_pose()
-{
-  ROS_INFO_NAMED(ROSOUT_NAME_ROB_POSE_PUB, "Init");
-
-  Eigen::Vector3d pos_ee_msr, pos_ll_msr;
-  Eigen::Quaterniond quat_ee_msr, quat_ll_msr;
-  first_quat_ee_msr_ = true;
-  first_quat_ll_msr_ = true;
-
-  double dt_pub_pose;
-  nh_->param<double>("dt_pub_pose", dt_pub_pose, 0.02);
-  ros::Rate r_HZ(1.0 / dt_pub_pose);
-
-  ros::Publisher pub = nh_->advertise<rpwc_msgs::RobotArmStateStamped>("rpwc_robot_curr_pose", 1);
-  ros::ServiceServer server_robot_curr_pose = nh_->advertiseService("rpwc_robot_curr_pose", callback_robot_curr_pose);
-  curr_pose_ee_.header.frame_id = root_name_;
-  curr_pose_ll_.header.frame_id = root_name_;
-  rpwc_msgs::RobotArmStateStamped msg;
-  std_msgs::Float32 tmp;
-
-  while(ros::ok())
-  {
-    fwdKin(fk_pos_solver_ee_, q_msr_, first_quat_ee_msr_, pos_ee_msr, quat_ee_msr, quat_ee_old_msr_);
-    curr_pose_ee_.header.stamp = ros::Time::now();
-    curr_pose_ee_.pose.position.x = pos_ee_msr.x();
-    curr_pose_ee_.pose.position.y = pos_ee_msr.y();
-    curr_pose_ee_.pose.position.z = pos_ee_msr.z();
-    curr_pose_ee_.pose.orientation.w = quat_ee_msr.w();
-    curr_pose_ee_.pose.orientation.x = quat_ee_msr.x();
-    curr_pose_ee_.pose.orientation.y = quat_ee_msr.y();
-    curr_pose_ee_.pose.orientation.z = quat_ee_msr.z();
-    fwdKin(fk_pos_solver_ll_, q_msr_, first_quat_ll_msr_, pos_ll_msr, quat_ll_msr, quat_ll_old_msr_);
-    curr_pose_ll_.header.stamp = ros::Time::now();
-    curr_pose_ll_.pose.position.x = pos_ll_msr.x();
-    curr_pose_ll_.pose.position.y = pos_ll_msr.y();
-    curr_pose_ll_.pose.position.z = pos_ll_msr.z();
-    curr_pose_ll_.pose.orientation.w = quat_ll_msr.w();
-    curr_pose_ll_.pose.orientation.x = quat_ll_msr.x();
-    curr_pose_ll_.pose.orientation.y = quat_ll_msr.y();
-    curr_pose_ll_.pose.orientation.z = quat_ll_msr.z();
-
-    msg.poseBaseToEe = curr_pose_ee_;
-    msg.poseBaseToLastLink = curr_pose_ll_;
-    msg.joint_position.clear();
-    for (int i = 0; i < num_of_joints_; i++)
-    {
-      tmp.data = q_msr_(i);
-      msg.joint_position.push_back(tmp);
-    }
-    pub.publish(msg);
-
-    r_HZ.sleep();
-  }
-
-  ROS_INFO_NAMED(ROSOUT_NAME_ROB_POSE_PUB, "Shutting down");
-  pub.shutdown();
-  server_robot_curr_pose.shutdown();
-}
-
-void thread_keep_alive()
-{
-  ros::Rate rate(freq_rtde_hz_);
-  while(ros::ok())
-  {
-    if (send_command_mutex_.try_lock())
-    {
-      if (freedrive_)
-        ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_NOOP);
-      else
-        ur_driver_->writeKeepalive();
-
-      send_command_mutex_.unlock();
-    }
-    rate.sleep();
-  }
-}
-
 void shutdown(std::string reason)
 {
-  ROS_WARN_STREAM_NAMED(ROSOUT_NAME_MAIN, "Shutting down node, reason: " << reason);
+  ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
+}
+
+void handleRobotProgramState(bool program_running)
+{
+  ROS_INFO_STREAM("ProgamState changed: " << (program_running ? "RUNNING" : "STOPPED"));
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
@@ -216,13 +213,11 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
 
 bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float>blending_radiuses)
 {
-  ROS_WARN_STREAM("waypoints: " << waypoints.size());
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   urcl::vector6d_t joints;
 
   for (int i = 0; i < waypoints.size(); i++)
   {
-    ROS_INFO_STREAM("Waypoint: " << i << " | " << waypoints[i].rows());
     for (int j = 0; j < num_of_joints_; j++)
     {
       joints[j] = waypoints[i](j);
@@ -230,7 +225,6 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
     }
 
     targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), 0.5, velocities[i]));
-    ROS_INFO_STREAM("Joints: " << joints[0] << joints[1] << joints[2] << joints[3] << joints[4] << joints[5]);
   }
 
   return exec_traj(targets);
@@ -473,29 +467,36 @@ int main(int argc, char** argv)
 
   if (!nh_->getParam("robot_ip", robot_ip_))
   {
-    ROS_FATAL_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/robot_ip' not found on param server");
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/robot_ip' not found on param server");
     shutdown("Param robot_ip missing");
     return 1;
   }
 
   if (!nh_->getParam("root_name", root_name_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/root_name' not found on param server");
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/root_name' not found on param server");
     shutdown("Param root_name missing");
     return 1;
   }
 
   if (!nh_->getParam("tip_name", tip_name_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/tip_name' not found on param server");
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/tip_name' not found on param server");
     shutdown("Param tip_name missing");
     return 1;
   }
 
   if (!nh_->getParam("urscript_file", urscript_file_path_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Param '" << name_space_ << "/urscript_file' not found on param server");
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/urscript_file' not found on param server");
     shutdown("Param urscript_file missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("kinematics/hash", calibration_hash_))
+  {
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/kinematics/hash' not found on param server");
+    shutdown("Param kinematics/hash missing");
     return 1;
   }
 
@@ -524,7 +525,7 @@ int main(int argc, char** argv)
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
-  ROS_INFO_NAMED(ROSOUT_NAME_MAIN, "Create UR_Driver");
+  ROS_INFO("Create UR_Driver");
   urcl::UrDriverConfiguration urDriverConfig;
   urDriverConfig.robot_ip = robot_ip_;
   urDriverConfig.script_file = urscript_file_path_;
@@ -536,30 +537,41 @@ int main(int argc, char** argv)
   ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
   ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
   ur_driver_->startRTDECommunication();
-  ROS_INFO_STREAM_NAMED(ROSOUT_NAME_MAIN, "ControlFrequency: " << ur_driver_->getControlFrequency());
+  ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
-  ROS_INFO_STREAM_NAMED(ROSOUT_NAME_MAIN, "checkCalibration: " << (ur_driver_->checkCalibration("calib_7791249639452159996") ? "VALID" : "INVALID"));
+  bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
+  ROS_INFO_STREAM("checkCalibration: " << ( calibValid? "VALID" : "INVALID"));
+  if (!calibValid)
+  {
+    ROS_ERROR_STREAM("The calibration parameters of the connected robot don't match the ones from the given kinematics "
+                     "config file. Please be aware that this can lead to critical inaccuracies of tcp positions. Use "
+                     "the ur_calibration tool to extract the correct calibration from the robot and pass that into the "
+                     "description. See "
+                     "[https://github.com/UniversalRobots/Universal_Robots_ROS_Driver#extract-calibration-information] "
+                     "for details.");
+  }
+
   std::thread joint_states_pub(&thread_pub_joint_states);
-  ROS_INFO_STREAM_NAMED(ROSOUT_NAME_MAIN, "Started joint_states publisher (ID: " << joint_states_pub.get_id() << ")");
+  ROS_INFO_STREAM("Started joint_states publisher (ID: " << joint_states_pub.get_id() << ")");
 
   ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
   ur_primary_ = ur_driver_->getPrimaryClient();
 
-  ROS_INFO_NAMED(ROSOUT_NAME_MAIN, "Load and parse URDF");
+  ROS_INFO("Load and parse URDF");
 
   std::string xml_string;
   if (nh_->hasParam("robot_description"))
     nh_->getParam("robot_description", xml_string);
   else
   {
-    ROS_ERROR_NAMED(ROSOUT_NAME_MAIN, "Parameter robot_description not set, shutting down node...");
+    ROS_ERROR("Parameter robot_description not set, shutting down node...");
     shutdown("Param robot_description missing");
     return 1;
   }
 
   if (xml_string.size() == 0)
   {
-    ROS_ERROR_NAMED(ROSOUT_NAME_MAIN, "Unable to load robot model from parameter robot_description");
+    ROS_ERROR("Unable to load robot model from parameter robot_description");
     shutdown("Param robot_description invalid");
     return 1;
   }
@@ -568,7 +580,7 @@ int main(int argc, char** argv)
   urdf::Model model;
   if (!model.initString(xml_string))
   {
-    ROS_ERROR_NAMED(ROSOUT_NAME_MAIN, "Failed to parse urdf file");
+    ROS_ERROR("Failed to parse urdf file");
     shutdown("Param  missing");
     return 1;
   }
@@ -576,7 +588,7 @@ int main(int argc, char** argv)
 
   if (!kdl_parser::treeFromUrdfModel(model, kdl_tree_))
   {
-    ROS_ERROR_NAMED(ROSOUT_NAME_MAIN, "Failed to construct kdl tree");
+    ROS_ERROR("Failed to construct kdl tree");
     shutdown("Param  missing");
     return 1;
   }
@@ -584,11 +596,11 @@ int main(int argc, char** argv)
   // Populate the KDL chain to EE
   if (!kdl_tree_.getChain(root_name_, tip_name_, kdl_chain_ee_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Failed to get KDL chain from tree: ");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  " << root_name_ << " --> " << tip_name_);
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  The segments are:");
+    ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+    ROS_ERROR_STREAM("  " << root_name_ << " --> " << tip_name_);
+    ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+    ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+    ROS_ERROR_STREAM("  The segments are:");
 
     KDL::SegmentMap segment_map = kdl_tree_.getSegments();
     KDL::SegmentMap::iterator it;
@@ -605,11 +617,11 @@ int main(int argc, char** argv)
   ll_name.erase(ll_name.begin());
   if (!kdl_tree_.getChain(root_name_, ll_name, kdl_chain_ll_))
   {
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "Failed to get KDL chain from tree: ");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  " << root_name_ << " --> " << ll_name);
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-    ROS_ERROR_STREAM_NAMED(ROSOUT_NAME_MAIN, "  The segments are:");
+    ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+    ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name);
+    ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+    ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+    ROS_ERROR_STREAM("  The segments are:");
 
     KDL::SegmentMap segment_map = kdl_tree_.getSegments();
     KDL::SegmentMap::iterator it;
@@ -620,7 +632,7 @@ int main(int argc, char** argv)
     shutdown("Error building kdl_chain_ll_");
     return 1;
   }
-  ROS_INFO_NAMED(ROSOUT_NAME_MAIN, "KDL Chains ready");
+  ROS_INFO("KDL Chains ready");
 
   num_of_joints_ = kdl_chain_ee_.getNrOfJoints();
   q_msr_.resize(num_of_joints_);
@@ -628,7 +640,7 @@ int main(int argc, char** argv)
   fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
   std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
-  ROS_INFO_STREAM_NAMED(ROSOUT_NAME_MAIN, "Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
+  ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
 
   ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
   ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
@@ -638,7 +650,7 @@ int main(int argc, char** argv)
 
   spinner.start();
   std::thread keep_alive(&thread_keep_alive);
-  wait();
+  ros::waitForShutdown();
 
   ROS_INFO("Exiting");
   spinner.stop();
