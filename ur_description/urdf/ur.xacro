@@ -16,6 +16,9 @@
    <xacro:arg name="roll_EE" default="0"/>
    <xacro:arg name="pitch_EE" default="0"/>
    <xacro:arg name="yaw_EE" default="0"/>
+   <xacro:arg name="roll_Last_Link" default="0"/>
+   <xacro:arg name="pitch_Last_Link" default="0"/>
+   <xacro:arg name="yaw_Last_Link" default="0"/>
 
    <!-- legal values:
          - hardware_interface/PositionJointInterface
@@ -36,6 +39,9 @@
      roll_EE="$(arg roll_EE)"
      pitch_EE="$(arg pitch_EE)"
      yaw_EE="$(arg yaw_EE)"
+     roll_Last_Link="$(arg roll_Last_Link)"
+     pitch_Last_Link="$(arg pitch_Last_Link)"
+     yaw_Last_Link="$(arg yaw_Last_Link)"
      joint_limits_parameters_file="$(arg joint_limit_params)"
      kinematics_parameters_file="$(arg kinematics_params)"
      physical_parameters_file="$(arg physical_params)"

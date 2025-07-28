@@ -7,7 +7,7 @@
 void thread_keep_alive()
 {
   ros::Rate rate(freq_rtde_hz_);
-  while(ros::ok())
+  while (ros::ok())
   {
     if (send_command_mutex_.try_lock())
     {
@@ -96,7 +96,7 @@ void thread_pub_rob_curr_pose()
 
   ROS_INFO("[robot_curr_pose]: Start");
 
-  while(ros::ok())
+  while (ros::ok())
   {
     fwdKin(fk_pos_solver_ee_, q_msr_, first_quat_ee_msr_, pos_ee_msr, quat_ee_msr, quat_ee_old_msr_);
     curr_pose_ee_.header.stamp = ros::Time::now();
@@ -135,10 +135,10 @@ void thread_pub_rob_curr_pose()
   server_robot_curr_pose.shutdown();
 }
 
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old)
+void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old)
 {
   Eigen::Matrix3d orient;
-  KDL::Frame x; // Tip pose
+  KDL::Frame x;  // Tip pose
   fk_solver->JntToCart(q, x);
 
   for (int i = 0; i < 3; i++)
@@ -176,6 +176,12 @@ void shutdown(std::string reason)
 {
   ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
+  ur_primary_->commandStop();
+  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandClearOperationalMode();
+  ur_dashboard_->disconnect();
+  ur_driver_->stopControl();
+  ur_primary_->stop();
 }
 
 void handleRobotProgramState(bool program_running)
@@ -189,7 +195,7 @@ bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> wayp
   return ur_instruction_executor_->executeMotion(waypoints);
 }
 
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float>blending_radiuses)
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   KDL::Rotation rot;
@@ -197,7 +203,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
 
   for (int i = 0; i < waypoints.size(); i++)
   {
-    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z, waypoints[i].orientation.w);
+    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z,waypoints[i].orientation.w);
     pose.x = waypoints[i].position.x;
     pose.y = waypoints[i].position.y;
     pose.z = waypoints[i].position.z;
@@ -211,7 +217,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
   return exec_traj(targets);
 }
 
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float>blending_radiuses)
+bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   urcl::vector6d_t joints;
@@ -221,7 +227,6 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
     for (int j = 0; j < num_of_joints_; j++)
     {
       joints[j] = waypoints[i](j);
-      
     }
 
     targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), 0.5, velocities[i]));
@@ -229,7 +234,6 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
 
   return exec_traj(targets);
 }
-
 
 // -----------------------------------------
 //           Services Callbacks
@@ -239,16 +243,19 @@ bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::
 {
   if (req.controller != 2 && last_controller_started_ != 2)
   {
-    if (req.controller != 99) last_controller_started_ = req.controller;
+    if (req.controller != 99)
+      last_controller_started_ = req.controller;
     res.result.data = true;
     return true;
   }
   else if (req.controller != 2)
   {
     ROS_INFO("Start native controller");
-    if (req.controller != 99) last_controller_started_ = req.controller;
-    else last_controller_started_ = 0;
-    
+    if (req.controller != 99)
+      last_controller_started_ = req.controller;
+    else
+      last_controller_started_ = 0;
+
     std::lock_guard<std::mutex> lock(send_command_mutex_);
     res.result.data = ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP);
     freedrive_ = false;
@@ -263,7 +270,7 @@ bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::
   return true;
 }
 
-bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res)
+bool callback_get_controller(rpwc_msgs::getController::Request& req, rpwc_msgs::getController::Response& res)
 {
   res.controller = last_controller_started_;
   return true;
@@ -285,7 +292,6 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
   }
   return true;
 }
-
 
 // -----------------------------------------
 //             Actions Servers
@@ -414,15 +420,14 @@ void JointsMove::goal_callback()
   std::vector<KDL::JntArray> waypoints;
   KDL::JntArray tmpWaypoint;
   tmpWaypoint.resize(num_of_joints_);
-  for(auto it = rpwc_goal->targets.begin(); it != rpwc_goal->targets.end(); it++)
+  for (auto it = rpwc_goal->targets.begin(); it != rpwc_goal->targets.end(); it++)
   {
-    for(int i = 0; i < num_of_joints_; i++)
+    for (int i = 0; i < num_of_joints_; i++)
     {
       tmpWaypoint(i) = it->values[i];
     }
     waypoints.push_back(tmpWaypoint);
   }
-
 
   ROS_INFO("[Joints Move]: Executing trajectory");
   rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->zone_radiuses);
@@ -447,7 +452,6 @@ void JointsMove::preempt_callback()
   ur_instruction_executor_->cancelMotion();
   send_command_mutex_.unlock();
 }
-
 
 // -----------------------------------------
 //                  Main
@@ -519,9 +523,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  ur_dashboard_->commandPowerOff();
-  ur_dashboard_->commandClearOperationalMode();
-  ur_dashboard_->commandPowerOn();
+  // ur_dashboard_->commandPowerOff();
+  // ur_dashboard_->commandClearOperationalMode();
+  // ur_dashboard_->commandPowerOn();
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
@@ -540,7 +544,7 @@ int main(int argc, char** argv)
   ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
   bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
-  ROS_INFO_STREAM("checkCalibration: " << ( calibValid? "VALID" : "INVALID"));
+  ROS_INFO_STREAM("checkCalibration: " << (calibValid ? "VALID" : "INVALID"));
   if (!calibValid)
   {
     ROS_ERROR_STREAM("The calibration parameters of the connected robot don't match the ones from the given kinematics "
@@ -639,6 +643,124 @@ int main(int argc, char** argv)
   fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
   fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
+  // Load Tool
+  urcl::vector6d_t tcp_offs;
+  if (!nh_->getParam("x_pos_EE", tcp_offs[0]))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/x_pos_EE' not found on param server");
+    shutdown("Param x_pos_EE missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("y_pos_EE", tcp_offs[1]))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/y_pos_EE' not found on param server");
+    shutdown("Param y_pos_EE missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("z_pos_EE", tcp_offs[2]))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/z_pos_EE' not found on param server");
+    shutdown("Param z_pos_EE missing");
+    return 1;
+  }
+
+  double roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
+  if (!nh_->getParam("roll_EE", roll_ee))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_EE' not found on param server");
+    shutdown("Param roll_EE missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("pitch_EE", pitch_ee))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_EE' not found on param server");
+    shutdown("Param pitch_EE missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("yaw_EE", yaw_ee))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_EE' not found on param server");
+    shutdown("Param yaw_EE missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("roll_Last_Link", roll_last_link))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_Last_Link' not found on param server");
+    shutdown("Param roll_Last_Link missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("pitch_Last_Link", pitch_last_link))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_Last_Link' not found on param server");
+    shutdown("Param pitch_Last_Link missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("yaw_Last_Link", yaw_last_link))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_Last_Link' not found on param server");
+    shutdown("Param yaw_Last_Link missing");
+    return 1;
+  }
+
+  KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
+  t_tool02LastLink.M.DoRotX(roll_last_link);
+  t_tool02LastLink.M.DoRotY(pitch_last_link);
+  t_tool02LastLink.M.DoRotZ(yaw_last_link);
+  KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
+  t_LastLink2EE.M.DoRotX(roll_ee);
+  t_LastLink2EE.M.DoRotY(pitch_ee);
+  t_LastLink2EE.M.DoRotZ(yaw_ee);
+  KDL::Frame t_tool02EE = t_tool02LastLink * t_LastLink2EE;
+  tcp_offs[0] = t_tool02EE.p.x();
+  tcp_offs[0] = t_tool02EE.p.y();
+  tcp_offs[0] = t_tool02EE.p.z();
+  tcp_offs[3] = t_tool02EE.M.GetRot()[0];
+  tcp_offs[4] = t_tool02EE.M.GetRot()[1];
+  tcp_offs[5] = t_tool02EE.M.GetRot()[2];
+
+  if (!ur_driver_->setTcp(tcp_offs))
+  {
+    ROS_FATAL_STREAM("Failed to set tcp offset");
+    shutdown("TCP set failed");
+    return 2;
+  }
+
+  // Load Payload
+  double payload;
+  if (!nh_->getParam("mass", payload))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/mass' not found on param server");
+    shutdown("Param mass missing");
+    return 1;
+  }
+
+  std::vector<double> cog;
+  if (!nh_->getParam("cog", cog))
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' not found on param server");
+    shutdown("Param cog missing");
+    return 1;
+  }
+
+  urcl::vector3d_t cog_ur;
+  cog_ur[0] = cog[0];
+  cog_ur[1] = cog[1];
+  cog_ur[2] = cog[2];
+  if (!ur_driver_->setPayload(payload, cog_ur))
+  {
+    ROS_FATAL_STREAM("Failed to set payload");
+    shutdown("Payload set failed");
+    return 2;
+  }
+
+  // Advertise publishers and services
   std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
   ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
 
@@ -654,11 +776,6 @@ int main(int argc, char** argv)
 
   ROS_INFO("Exiting");
   spinner.stop();
-  ur_primary_->commandStop();
-  ur_dashboard_->commandPowerOff();
-  ur_dashboard_->commandClearOperationalMode();
-  ur_dashboard_->disconnect();
-  ur_driver_->stopControl();
-  ur_primary_->stop();
+  shutdown("Node shutdown");
   return 0;
 }

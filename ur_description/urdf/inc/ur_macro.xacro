@@ -62,6 +62,9 @@
     roll_EE:=0
     pitch_EE:=0
     yaw_EE:=0
+    roll_Last_Link:=0
+    pitch_Last_Link:=0
+    yaw_Last_Link:=0
     joint_limits_parameters_file
     kinematics_parameters_file
     physical_parameters_file
@@ -336,8 +339,7 @@
 
     <link name="${prefix}rpwc_last_robot_link"/>
     <joint name="${prefix}flange-rpwc_last_robot_link" type="fixed">
-      <!-- default toolframe: X+ left, Y+ up, Z+ front -->
-      <origin xyz="0 0 0" rpy="0 ${pi/2.0} 0"/>
+      <origin xyz="0 0 0" rpy="${roll_Last_Link} ${pitch_Last_Link} ${yaw_Last_Link}"/>
       <parent link="${prefix}flange"/>
       <child link="${prefix}rpwc_last_robot_link"/>
     </joint>

@@ -19,6 +19,9 @@
   <arg name="roll_EE" default="0"/>
   <arg name="pitch_EE" default="0"/>
   <arg name="yaw_EE" default="0"/>
+  <arg name="roll_Last_Link" value="$(arg roll_Last_Link)"/>
+  <arg name="pitch_Last_Link" value="$(arg pitch_Last_Link)"/>
+  <arg name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
 
   <!-- Load the top-level (ie: stand-alone and complete) xacro for the UR
        variant defined by the set of yaml parameter files (so to load a UR5
@@ -46,6 +49,9 @@
     roll_EE:=$(arg roll_EE)
     pitch_EE:=$(arg pitch_EE)
     yaw_EE:=$(arg yaw_EE)
+    roll_Last_Link:=$(arg roll_Last_Link)
+    pitch_Last_Link:=$(arg pitch_Last_Link)
+    yaw_Last_Link:=$(arg yaw_Last_Link)
     joint_limit_params:=$(arg joint_limit_params)
     kinematics_params:=$(arg kinematics_params)
     physical_params:=$(arg physical_params)
