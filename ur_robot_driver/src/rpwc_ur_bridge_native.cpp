@@ -177,7 +177,7 @@ void shutdown(std::string reason)
   ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
   ur_primary_->commandStop();
-  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
   ur_dashboard_->disconnect();
   ur_driver_->stopControl();
@@ -523,9 +523,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  // ur_dashboard_->commandPowerOff();
-  // ur_dashboard_->commandClearOperationalMode();
-  // ur_dashboard_->commandPowerOn();
+  ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandClearOperationalMode();
+  ur_dashboard_->commandPowerOn();
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
@@ -644,29 +644,28 @@ int main(int argc, char** argv)
   fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
   // Load Tool
-  urcl::vector6d_t tcp_offs;
-  if (!nh_->getParam("x_pos_EE", tcp_offs[0]))
+  double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
+  if (!nh_->getParam("x_pos_EE", x_pos_ee))
   {
     ROS_FATAL_STREAM("Param '" << name_space_ << "/x_pos_EE' not found on param server");
     shutdown("Param x_pos_EE missing");
     return 1;
   }
 
-  if (!nh_->getParam("y_pos_EE", tcp_offs[1]))
+  if (!nh_->getParam("y_pos_EE", y_pos_ee))
   {
     ROS_FATAL_STREAM("Param '" << name_space_ << "/y_pos_EE' not found on param server");
     shutdown("Param y_pos_EE missing");
     return 1;
   }
 
-  if (!nh_->getParam("z_pos_EE", tcp_offs[2]))
+  if (!nh_->getParam("z_pos_EE", z_pos_ee))
   {
     ROS_FATAL_STREAM("Param '" << name_space_ << "/z_pos_EE' not found on param server");
     shutdown("Param z_pos_EE missing");
     return 1;
   }
 
-  double roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
   if (!nh_->getParam("roll_EE", roll_ee))
   {
     ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_EE' not found on param server");
@@ -710,20 +709,22 @@ int main(int argc, char** argv)
   }
 
   KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
-  t_tool02LastLink.M.DoRotX(roll_last_link);
-  t_tool02LastLink.M.DoRotY(pitch_last_link);
-  t_tool02LastLink.M.DoRotZ(yaw_last_link);
+  t_tool02LastLink.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);
   KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
-  t_LastLink2EE.M.DoRotX(roll_ee);
-  t_LastLink2EE.M.DoRotY(pitch_ee);
-  t_LastLink2EE.M.DoRotZ(yaw_ee);
+  t_LastLink2EE.p.data[0] = x_pos_ee;
+  t_LastLink2EE.p.data[1] = y_pos_ee;
+  t_LastLink2EE.p.data[2] = z_pos_ee;
+  t_LastLink2EE.M = KDL::Rotation::RPY(roll_ee, pitch_ee, yaw_ee);
   KDL::Frame t_tool02EE = t_tool02LastLink * t_LastLink2EE;
+  urcl::vector6d_t tcp_offs;
   tcp_offs[0] = t_tool02EE.p.x();
-  tcp_offs[0] = t_tool02EE.p.y();
-  tcp_offs[0] = t_tool02EE.p.z();
-  tcp_offs[3] = t_tool02EE.M.GetRot()[0];
-  tcp_offs[4] = t_tool02EE.M.GetRot()[1];
-  tcp_offs[5] = t_tool02EE.M.GetRot()[2];
+  tcp_offs[1] = t_tool02EE.p.y();
+  tcp_offs[2] = t_tool02EE.p.z();
+  tcp_offs[3] = t_tool02EE.M.GetRot().x();
+  tcp_offs[4] = t_tool02EE.M.GetRot().y();
+  tcp_offs[5] = t_tool02EE.M.GetRot().z();
+
+  ROS_INFO_STREAM("urcl::vectord6d_t: " << tcp_offs[0] << " | " << tcp_offs[1] << " | " << tcp_offs[2] << " | " << tcp_offs[3] << " | " << tcp_offs[4] << " | " << tcp_offs[5]);
 
   if (!ur_driver_->setTcp(tcp_offs))
   {
