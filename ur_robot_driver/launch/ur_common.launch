@@ -33,6 +33,9 @@
 	<arg name="roll_EE" default="0"/>
 	<arg name="pitch_EE" default="0"/>
 	<arg name="yaw_EE" default="0"/>
+  <arg name="roll_Last_Link" default="0"/>
+  <arg name="pitch_Last_Link" default="0"/>
+  <arg name="yaw_Last_Link" default="0"/>
 
   <!-- robot model -->
   <include file="$(arg robot_description_file)">
@@ -44,7 +47,9 @@
     <arg name="roll_EE" value="$(arg roll_EE)"/>
     <arg name="pitch_EE" value="$(arg pitch_EE)"/>
     <arg name="yaw_EE" value="$(arg yaw_EE)"/>
-
+    <arg name="roll_Last_Link" value="$(arg roll_Last_Link)"/>
+    <arg name="pitch_Last_Link" value="$(arg pitch_Last_Link)"/>
+    <arg name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
   </include>
 
   <!-- Convert joint states to /tf tranforms -->
