@@ -2,6 +2,7 @@
 <launch>
   <arg name="prefix" default="setup1/robot1/"/>
   <arg name="robot_ip" default="192.168.1.112"/>
+  <arg name="dt_pub_pose" default="0.01" doc="dt of threadPubRobPose"/>
   <arg name="rate_rtde_hz" default="50"/>
   <arg name="root_name" default="base"/>
   <arg name="tip_name" default="rpwc_EE"/>
@@ -17,9 +18,28 @@
 
   <group ns="$(arg prefix)">
     <param name="robot_ip" value="$(arg robot_ip)"/>
+    <param name="dt_pub_pose" value="$(arg dt_pub_pose)"/>
     <param name="root_name" value="$(arg prefix)$(arg root_name)"/>
     <param name="tip_name" value="$(arg prefix)$(arg tip_name)"/>
     <param name="rate_rtde_hz" value="$(arg rate_rtde_hz)"/>
+    <param name="urscript_file" value="$(arg urscript_file)"/>
+    <param name="x_pos_EE" value="$(arg x_pos_EE)"/>
+    <param name="y_pos_EE" value="$(arg y_pos_EE)"/>
+    <param name="z_pos_EE" value="$(arg z_pos_EE)"/>
+    <param name="roll_EE" value="$(arg roll_EE)"/>
+    <param name="pitch_EE" value="$(arg pitch_EE)"/>
+    <param name="yaw_EE" value="$(arg yaw_EE)"/>
+    <param name="roll_Last_Link" value="$(arg roll_Last_Link)"/>
+    <param name="pitch_Last_Link" value="$(arg pitch_Last_Link)"/>
+    <param name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
+    <param name="mass" value="0.002" /> <!--kg-->
+    <rosparam param="cog">[0,0,0]</rosparam> <!--m-->
+    <param name="joint_trajectory_controller" value="$(arg joint_trajectory_controller)"/>
+    <param name="debug_moveit_manager" value="$(arg debug_moveit_manager)" />
+    <param name="max_speed_linear" value="4.0"/> <!-- m/s -->
+    <param name="max_acceleration_linear" value="2.5"/> <!-- m/s^2 -->
+    <param name="max_speed_joint" value="2.0944"/> <!-- rad/s -->
+    <param name="max_acceleration_joint" value="13.9626"/> <!-- rad/s^2 -->
 
     <!-- Load joints names from controller config -->
     <rosparam subst_value="true" file="$(arg controller_config_file)" command="load"/>
@@ -34,6 +54,9 @@
       <arg name="roll_EE" value="$(arg roll_EE)"/>
       <arg name="pitch_EE" value="$(arg pitch_EE)"/>
       <arg name="yaw_EE" value="$(arg yaw_EE)"/>
+      <arg name="roll_Last_Link" value="$(arg roll_Last_Link)"/>
+      <arg name="pitch_Last_Link" value="$(arg pitch_Last_Link)"/>
+      <arg name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
     </include>
 
     <!-- Convert joint states to /tf tranforms -->

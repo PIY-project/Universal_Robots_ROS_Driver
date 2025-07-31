@@ -195,13 +195,14 @@ bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> wayp
   return ur_instruction_executor_->executeMotion(waypoints);
 }
 
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses)
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   KDL::Rotation rot;
   urcl::Pose pose;
+  double vel, acc;
 
-  for (int i = 0; i < waypoints.size(); i++)
+  for (long unsigned int i = 0; i < waypoints.size(); i++)
   {
     rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z,waypoints[i].orientation.w);
     pose.x = waypoints[i].position.x;
@@ -210,26 +211,32 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
     pose.rx = rot.GetRot().x();
     pose.ry = rot.GetRot().y();
     pose.rz = rot.GetRot().z();
+    vel = max_speed_linear_ * velocities[i];
+    acc = max_acceleration_linear_ * accelerations[i];
 
-    targets.push_back(std::make_shared<urcl::control::MoveLPrimitive>(pose, blending_radiuses[i], std::chrono::milliseconds(0), 0.5, velocities[i]));
+    targets.push_back(std::make_shared<urcl::control::MoveLPrimitive>(pose, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
   }
 
   return exec_traj(targets);
 }
 
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses)
+bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   urcl::vector6d_t joints;
+  double vel, acc;
 
-  for (int i = 0; i < waypoints.size(); i++)
+  for (long unsigned int i = 0; i < waypoints.size(); i++)
   {
     for (int j = 0; j < num_of_joints_; j++)
     {
       joints[j] = waypoints[i](j);
     }
+    vel = max_speed_joint_ * velocities[i];
+    acc = max_acceleration_joint_ * accelerations[i];
+    ROS_WARN_STREAM("vel: " << vel << " | acc: " << acc);
 
-    targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), 0.5, velocities[i]));
+    targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
   }
 
   return exec_traj(targets);
@@ -322,11 +329,13 @@ void CartesianMove::goal_callback()
   ROS_INFO("[Cartesian Move]: Accepting new goal");
   rpwc_goal = as.acceptNewGoal();
 
-  int len = rpwc_goal->Poses.size();
+  long unsigned int len = rpwc_goal->Poses.size();
   if (rpwc_goal->types.size() < len)
     len = rpwc_goal->types.size();
   if (rpwc_goal->velocities.size() < len)
     len = rpwc_goal->velocities.size();
+  if (rpwc_goal->accelerations.size() < len)
+    len = rpwc_goal->accelerations.size();
   if (rpwc_goal->zone_radiuses.size() < len)
     len = rpwc_goal->zone_radiuses.size();
 
@@ -340,11 +349,11 @@ void CartesianMove::goal_callback()
     return;
   }
 
-  for (int i = 0; i < len; i++)
+  for (auto& type : rpwc_goal->types)
   {
-    if (rpwc_goal->types[i] != rpwc_goal->LINEAR_MOVE)
+    if (type != rpwc_goal->LINEAR_MOVE)
     {
-      ROS_ERROR_STREAM("[Cartesian Move]: Uknown move type: '" << rpwc_goal->types[i] << "' aborting goal");
+      ROS_ERROR_STREAM("[Cartesian Move]: Uknown move type: '" << type << "' aborting goal");
       rpwc_result.success = false;
       rpwc_result.msg = "Uknown move type";
       as.setAborted(rpwc_result, rpwc_result.msg);
@@ -353,7 +362,7 @@ void CartesianMove::goal_callback()
   }
 
   ROS_INFO("[Cartesian Move]: Executing trajectory");
-  rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->zone_radiuses);
+  rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
 
   if (!rpwc_result.success)
   {
@@ -401,9 +410,11 @@ void JointsMove::goal_callback()
   ROS_INFO("[Joints Move]: Accepting new goal");
   rpwc_goal = as.acceptNewGoal();
 
-  int len = rpwc_goal->targets.size();
+  long unsigned int len = rpwc_goal->targets.size();
   if (rpwc_goal->velocities.size() < len)
     len = rpwc_goal->velocities.size();
+  if (rpwc_goal->accelerations.size() < len)
+    len = rpwc_goal->accelerations.size();
   if (rpwc_goal->zone_radiuses.size() < len)
     len = rpwc_goal->zone_radiuses.size();
 
@@ -430,7 +441,7 @@ void JointsMove::goal_callback()
   }
 
   ROS_INFO("[Joints Move]: Executing trajectory");
-  rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->zone_radiuses);
+  rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
 
   if (!rpwc_result.success)
   {
@@ -501,6 +512,34 @@ int main(int argc, char** argv)
   {
     ROS_ERROR_STREAM("Param '" << name_space_ << "/kinematics/hash' not found on param server");
     shutdown("Param kinematics/hash missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("max_speed_linear", max_speed_linear_))
+  {
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/max_speed_linear' not found on param server");
+    shutdown("Param max_speed_linear missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("max_acceleration_linear", max_acceleration_linear_))
+  {
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/max_acceleration_linear' not found on param server");
+    shutdown("Param max_acceleration_linear missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("max_speed_joint", max_speed_joint_))
+  {
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/max_speed_joint' not found on param server");
+    shutdown("Param max_speed_joint missing");
+    return 1;
+  }
+
+  if (!nh_->getParam("max_acceleration_joint", max_acceleration_joint_))
+  {
+    ROS_ERROR_STREAM("Param '" << name_space_ << "/max_acceleration_joint' not found on param server");
+    shutdown("Param max_acceleration_joint missing");
     return 1;
   }
 
@@ -723,8 +762,6 @@ int main(int argc, char** argv)
   tcp_offs[3] = t_tool02EE.M.GetRot().x();
   tcp_offs[4] = t_tool02EE.M.GetRot().y();
   tcp_offs[5] = t_tool02EE.M.GetRot().z();
-
-  ROS_INFO_STREAM("urcl::vectord6d_t: " << tcp_offs[0] << " | " << tcp_offs[1] << " | " << tcp_offs[2] << " | " << tcp_offs[3] << " | " << tcp_offs[4] << " | " << tcp_offs[5]);
 
   if (!ur_driver_->setTcp(tcp_offs))
   {

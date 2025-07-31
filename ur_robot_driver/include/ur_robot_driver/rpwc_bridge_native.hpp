@@ -64,8 +64,8 @@ void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::Jnt
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses);
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> blending_radiuses);
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
+bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
 
 // -----------------------------------------
 //           Services Callbacks
@@ -119,7 +119,7 @@ private:
 
 ros::NodeHandle* nh_;
 std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
-float freq_rtde_hz_;
+float freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;
 std::shared_ptr<urcl::primary_interface::PrimaryClient> ur_primary_;
