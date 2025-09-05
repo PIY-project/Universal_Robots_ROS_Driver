@@ -6,6 +6,6 @@ moveit_setup_assistant_config:
   SRDF:
     relative_path: config/ur10e_robot.srdf
   CONFIG:
-    author_name: Gianluca Lentini
-    author_email: gianluca.lentini@exsensia.ai
-    generated_timestamp: 1742828220
+    author_name: emanuele
+    author_email: emanuele.locatelli@exsensia.ai
+    generated_timestamp: 1756907869

@@ -5,8 +5,8 @@
   <description>
      An automatically generated package with all the configuration and launch files for using the ur10e_robot with the MoveIt Motion Planning Framework
   </description>
-  <author email="gianluca.lentini@exsensia.ai">Gianluca Lentini</author>
-  <maintainer email="gianluca.lentini@exsensia.ai">Gianluca Lentini</maintainer>
+  <author email="emanuele.locatelli@exsensia.ai">emanuele</author>
+  <maintainer email="emanuele.locatelli@exsensia.ai">emanuele</maintainer>
 
   <license>BSD</license>
 

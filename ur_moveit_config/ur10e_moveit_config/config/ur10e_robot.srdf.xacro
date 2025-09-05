@@ -3,7 +3,7 @@
     <xacro:arg name="prefix" default=""/>
     <!-- GROUPS -->
     <group name="ur10e_arm">
-        <chain base_link="$(arg prefix)base_link" tip_link="$(arg prefix)rpwc_EE"/>
+        <chain base_link="$(arg prefix)base" tip_link="$(arg prefix)rpwc_EE"/>
     </group>
 
     <!-- GROUP STATES -->
@@ -17,7 +17,7 @@
     </group_state>
 
     <!-- VIRTUAL JOINT -->
-    <virtual_joint name="$(arg prefix)virtual_joint" type="fixed" parent_frame="$(arg prefix)world" child_link="$(arg prefix)base_link"/>
+    <virtual_joint name="$(arg prefix)virtual_joint" type="fixed" parent_frame="$(arg prefix)world" child_link="$(arg prefix)base"/>
 
     <!-- DISABLE COLLISIONS -->
     <disable_collisions link1="$(arg prefix)base_link_inertia" link2="$(arg prefix)shoulder_link" reason="Adjacent"/>

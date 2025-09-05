@@ -38,11 +38,11 @@
   -->
 
   <arg name="load_robot_description" default="false" />
-  <arg name="prefix" default="" />
+  <arg name="prefix" default=""/>
   <!-- load URDF, SRDF and joint_limits configuration -->
   <include file="$(dirname)/planning_context.launch">
     <arg name="load_robot_description" value="$(arg load_robot_description)" />
-    <arg name="prefix" value="$(arg prefix)" />
+    <arg name="prefix" default="$(arg prefix)"/>
   </include>
 
   <!-- Planning Pipelines -->
@@ -75,7 +75,7 @@
     <arg name="moveit_manage_controllers" value="true" />
     <arg name="moveit_controller_manager" value="$(arg moveit_controller_manager)" />
     <arg name="fake_execution_type" value="$(arg fake_execution_type)" />
-    <arg name="prefix" value="$(arg prefix)" />
+    <arg name="prefix" default="$(arg prefix)"/>
   </include>
 
   <!-- Sensors Functionality -->
