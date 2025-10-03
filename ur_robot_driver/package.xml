@@ -49,6 +49,7 @@
   <depend>ur_client_library</depend>
   <depend>ur_dashboard_msgs</depend>
   <depend>ur_msgs</depend>
+  <depend>rpwc</depend>
 
   <exec_depend>cartesian_trajectory_controller</exec_depend>
   <exec_depend>force_torque_sensor_controller</exec_depend>
@@ -60,6 +61,7 @@
   <exec_depend>twist_controller</exec_depend>
   <exec_depend>ur_description</exec_depend>
   <exec_depend>velocity_controllers</exec_depend>
+  <exec_depend>rwpc</exec_depend>
 
   <test_depend>rostest</test_depend>
 
