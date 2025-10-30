@@ -472,6 +472,14 @@ int main(int argc, char** argv)
 {
   ros::init(argc, argv, "rpwc_ur_bridge_native");
   nh_ = new ros::NodeHandle();
+
+  if (!rpwc_license::check_license())
+  {
+    ROS_FATAL("License check failed");
+    nh_->shutdown();
+    return 1;
+  }
+
   ros::AsyncSpinner spinner(2);
   urcl::setLogLevel(urcl::LogLevel::INFO);
   urcl::comm::INotifier notifier;

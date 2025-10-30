@@ -29,6 +29,7 @@
 #include <actionlib/client/terminal_state.h>
 
 // Packages includes
+#include <rpwc/license_checker.hpp>
 #include <rpwc_msgs/setController.h>
 #include <rpwc_msgs/getController.h>
 #include <rpwc_msgs/robotArmState.h>
@@ -60,12 +61,15 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 void thread_keep_alive();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
+void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat,
+            Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations,
+            std::vector<float> blending_radiuses);
+bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations,
+            std::vector<float> blending_radiuses);
 
 // -----------------------------------------
 //           Services Callbacks

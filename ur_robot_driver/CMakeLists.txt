@@ -16,6 +16,8 @@ option(
   OFF
 )
 
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
 find_package(catkin REQUIRED
   COMPONENTS
     actionlib
@@ -44,6 +46,7 @@ find_package(catkin REQUIRED
 )
 find_package(Boost REQUIRED)
 find_package(ur_client_library REQUIRED)
+find_package(Botan2 REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS
@@ -73,6 +76,7 @@ catkin_package(
     trajectory_msgs
     ur_dashboard_msgs
     ur_msgs
+    rpwc
   DEPENDS
     Boost
     ur_client_library
@@ -87,6 +91,8 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${Boost_INCLUDE_DIRS}
+  ${rpwc_INCULE_DIRS}
+  ${BOTAN2_INCLUDE_DIRS}
 )
 
 add_library(ur_robot_driver_plugin
@@ -139,7 +145,7 @@ target_link_libraries(rpwc_ur_bridge_node ${catkin_LIBRARIES})
 
 add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp)
 add_dependencies(rpwc_ur_bridge_native ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl)
+target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl ${rpwc_LIBRARIES} ${BOTAN2_LIBRARIES})
 
 add_executable(moveit_manager_ur_10e src/moveit_manager_ur/ur_10e.cpp)
 add_dependencies(moveit_manager_ur_10e ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
