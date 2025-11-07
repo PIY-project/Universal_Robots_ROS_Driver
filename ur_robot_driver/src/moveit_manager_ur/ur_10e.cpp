@@ -13,7 +13,7 @@ bool moveitManagerUR10e::checkCustomSingularity(const KDL::JntArray &q)
   return true;
 }
 
-bool moveitManagerUR10e::attemptCustomSingularityRecovery(const std::vector<geometry_msgs::Pose> &waypointsPose, trajSettings &traj_settings, errorCode &error)
+bool moveitManagerUR10e::attemptCustomSingularityRecovery(const std::vector<geometry_msgs::Pose> &waypointsPose, trajSettings &traj_settings, std::vector<rpwc_msgs::armWaypoint> &completed_waypoints, std::vector<rpwc_msgs::armWaypoint> &pending_waypoints, rpwc::errorArmMotionCode &error)
 {
   ROS_ERROR("No custom singularity defined");
   return false;

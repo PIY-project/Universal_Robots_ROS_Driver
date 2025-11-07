@@ -24,7 +24,7 @@ class moveitManagerUR10e : public moveitManager
     ~moveitManagerUR10e();
 
   protected:
-    bool attemptCustomSingularityRecovery(const std::vector<geometry_msgs::Pose> &waypointsPose, trajSettings &traj_settings, errorCode &error) override;
+    bool attemptCustomSingularityRecovery(const std::vector<geometry_msgs::Pose> &waypointsPose, trajSettings &traj_settings, std::vector<rpwc_msgs::armWaypoint> &completed_waypoints, std::vector<rpwc_msgs::armWaypoint> &pending_waypoints, rpwc::errorArmMotionCode &error) override;
     bool checkCustomSingularity(const KDL::JntArray &q) override;
 };
 
