@@ -1,8 +1,7 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(ur_kinematics)
 
-find_package(catkin REQUIRED COMPONENTS roscpp geometry_msgs moveit_core moveit_kinematics
-  moveit_ros_planning pluginlib tf_conversions)
+find_package(catkin REQUIRED COMPONENTS roscpp geometry_msgs pluginlib tf_conversions)
 
 find_package(Boost REQUIRED COMPONENTS system)
 
@@ -11,11 +10,9 @@ catkin_python_setup()
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ur3_kin ur5_kin ur10_kin ur3_moveit_plugin ur5_moveit_plugin ur10_moveit_plugin ur3e_kin ur5e_kin ur10e_kin ur16e_kin ur20_kin ur20_moveit_plugin ur30_kin ur30_moveit_plugin
-  CATKIN_DEPENDS roscpp geometry_msgs moveit_core moveit_kinematics moveit_ros_planning
-    pluginlib tf_conversions
+  CATKIN_DEPENDS roscpp geometry_msgs pluginlib tf_conversions
   DEPENDS Boost
 )
-
 
 ###########
 ## Build ##
