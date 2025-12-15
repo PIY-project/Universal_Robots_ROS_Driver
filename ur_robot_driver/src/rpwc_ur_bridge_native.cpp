@@ -30,7 +30,6 @@ void thread_read_rtde_data()
   urcl::vector6d_t robData = urcl::vector6d_t();
 
   ROS_INFO("[RTDE Reader]: Start");
-  ROS_WARN_STREAM("q_msr_: " << q_msr_.rows() << " | qd_msr_: " << qd_msr_.rows() << " | num_of_joints_: " << num_of_joints_);
 
   while (ros::ok())
   {
@@ -705,9 +704,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
-  // ur_dashboard_->commandPowerOn();
+  ur_dashboard_->commandPowerOn();
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
