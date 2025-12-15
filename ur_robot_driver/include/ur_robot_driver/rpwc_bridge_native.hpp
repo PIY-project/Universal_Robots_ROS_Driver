@@ -23,6 +23,7 @@
 #include <ros/package.h>
 #include <geometry_msgs/Pose.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/Wrench.h>
 #include <sensor_msgs/JointState.h>
 #include <actionlib/server/simple_action_server.h>
 #include <actionlib/client/simple_action_client.h>
@@ -58,6 +59,7 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 // -----------------------------------------
 
 void thread_keep_alive();
+void thread_read_rtde_data();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
@@ -127,11 +129,13 @@ std::shared_ptr<urcl::InstructionExecutor> ur_instruction_executor_;
 KDL::Tree kdl_tree_;
 KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
 int num_of_joints_, last_controller_started_;
-KDL::JntArray q_msr_;
+KDL::JntArray q_msr_, qd_msr_;
 bool freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
 Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
-std::mutex send_command_mutex_;
+std::mutex send_command_mutex_, q_mutex_, wrench_mutex_;
+urcl::vector6d_t wrench_;
+double dt_pub_pose_;
 
 #endif  // UR_RPWC_BRIDGE_NATIVE_HPP

@@ -1,7 +1,7 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
 
 // -----------------------------------------
-//                Functions
+//                 Threads
 // -----------------------------------------
 
 void thread_keep_alive()
@@ -22,6 +22,41 @@ void thread_keep_alive()
   }
 }
 
+void thread_read_rtde_data()
+{
+  ROS_INFO("[RTDE Reader]: Init");
+  ros::Rate rate(freq_rtde_hz_);
+  std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg;
+  urcl::vector6d_t robData = urcl::vector6d_t();
+
+  ROS_INFO("[RTDE Reader]: Start");
+  ROS_WARN_STREAM("q_msr_: " << q_msr_.rows() << " | qd_msr_: " << qd_msr_.rows() << " | num_of_joints_: " << num_of_joints_);
+
+  while (ros::ok())
+  {
+    data_pkg = ur_driver_->getDataPackage();
+
+    // Joints
+    q_mutex_.lock();
+    data_pkg->getData<urcl::vector6d_t>("actual_q", robData);
+    for (int i = 0; i < num_of_joints_; i++)
+      q_msr_(i) = robData[i];
+    data_pkg->getData<urcl::vector6d_t>("actual_qd", robData);
+    for (int i = 0; i < num_of_joints_; i++)
+      qd_msr_(i) = robData[i];
+    q_mutex_.unlock();
+
+    // Wrench
+    wrench_mutex_.lock();
+    data_pkg->getData<urcl::vector6d_t>("actual_TCP_force", wrench_);
+    wrench_mutex_.unlock();
+
+    rate.sleep();
+  }
+
+  ROS_INFO("[RTDE Reader]: Shutdown");
+}
+
 void thread_pub_joint_states()
 {
   ROS_INFO("[joint_states]: Init");
@@ -38,33 +73,23 @@ void thread_pub_joint_states()
   ros::Rate rate(freq_rtde_hz_);
 
   ros::Publisher pub = nh_->advertise<sensor_msgs::JointState>("joint_states", 1, false);
-  std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg;
-  urcl::vector6d_t robData = urcl::vector6d_t();
 
   ROS_INFO("[joint_states]: Start");
 
   while (ros::ok())
   {
-    data_pkg = ur_driver_->getDataPackage();
-
-    data_pkg->getData<urcl::vector6d_t>("actual_q", robData);
-
     msg.header.stamp = ros::Time::now();
     msg.position.clear();
     msg.velocity.clear();
     msg.effort.clear();
-    for (double joint : robData)
+    q_mutex_.lock();
+    for (int i = 0; i < num_of_joints_; i++)
     {
-      msg.position.push_back(joint);
+      msg.position.push_back(q_msr_(i));
+      msg.velocity.push_back(qd_msr_(i));
       msg.effort.push_back(0.0);
     }
-
-    for (int i = 0; i < num_of_joints_; i++)
-      q_msr_(i) = robData[i];
-
-    data_pkg->getData<urcl::vector6d_t>("actual_qd", robData);
-    for (double vel : robData)
-      msg.velocity.push_back(vel);
+    q_mutex_.unlock();
 
     pub.publish(msg);
     rate.sleep();
@@ -83,9 +108,7 @@ void thread_pub_rob_curr_pose()
   first_quat_ee_msr_ = true;
   first_quat_ll_msr_ = true;
 
-  double dt_pub_pose;
-  nh_->param<double>("dt_pub_pose", dt_pub_pose, 0.02);
-  ros::Rate r_HZ(1.0 / dt_pub_pose);
+  ros::Rate r_HZ(1.0 / dt_pub_pose_);
 
   ros::Publisher pub = nh_->advertise<rpwc_msgs::RobotArmStateStamped>("rpwc_robot_curr_pose", 1);
   ros::ServiceServer server_robot_curr_pose = nh_->advertiseService("rpwc_robot_curr_pose", callback_robot_curr_pose);
@@ -98,6 +121,7 @@ void thread_pub_rob_curr_pose()
 
   while (ros::ok())
   {
+    q_mutex_.lock();
     fwdKin(fk_pos_solver_ee_, q_msr_, first_quat_ee_msr_, pos_ee_msr, quat_ee_msr, quat_ee_old_msr_);
     curr_pose_ee_.header.stamp = ros::Time::now();
     curr_pose_ee_.pose.position.x = pos_ee_msr.x();
@@ -126,6 +150,7 @@ void thread_pub_rob_curr_pose()
       msg.joint_position.push_back(tmp);
     }
     pub.publish(msg);
+    q_mutex_.unlock();
 
     r_HZ.sleep();
   }
@@ -134,6 +159,39 @@ void thread_pub_rob_curr_pose()
   pub.shutdown();
   server_robot_curr_pose.shutdown();
 }
+
+void thread_pub_wrench()
+{
+  ROS_INFO("[Wrench]: Init");
+  ros::Publisher pub = nh_->advertise<geometry_msgs::Wrench>("wrench", 1);
+  ros::Rate rate(freq_rtde_hz_);
+  geometry_msgs::Wrench msg = geometry_msgs::Wrench();
+
+  ROS_INFO("[Wrench]: Start");
+
+  while (ros::ok())
+  {
+    wrench_mutex_.lock();
+    msg.force.x = wrench_[0];
+    msg.force.y = wrench_[1];
+    msg.force.z = wrench_[2];
+    msg.torque.x = wrench_[3];
+    msg.torque.y = wrench_[4];
+    msg.torque.z = wrench_[5];
+    wrench_mutex_.unlock();
+
+    pub.publish(msg);
+
+    rate.sleep();
+  }
+
+  ROS_INFO("[Wrench]: Shutdown");
+  pub.shutdown();
+}
+
+// -----------------------------------------
+//                Functions
+// -----------------------------------------
 
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old)
 {
@@ -204,7 +262,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
 
   for (long unsigned int i = 0; i < waypoints.size(); i++)
   {
-    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z,waypoints[i].orientation.w);
+    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z, waypoints[i].orientation.w);
     pose.x = waypoints[i].position.x;
     pose.y = waypoints[i].position.y;
     pose.z = waypoints[i].position.z;
@@ -544,61 +602,7 @@ int main(int argc, char** argv)
   }
 
   nh_->param<float>("rate_rtde_hz", freq_rtde_hz_, 50.0);
-
-  ROS_INFO("Starting Primary");
-  auto my_primary = std::make_shared<urcl::primary_interface::PrimaryClient>(robot_ip_, notifier);
-  my_primary->start();
-
-  ROS_INFO("Starting Dashboard");
-  ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));
-  if (!ur_dashboard_->connect(3, std::chrono::seconds(5)))
-  {
-    URCL_LOG_ERROR("Could not connect to dashboard");
-    return 1;
-  }
-
-  timeval timeout;
-  timeout.tv_sec = 3;
-  timeout.tv_usec = 0;
-  ur_dashboard_->setReceiveTimeout(timeout);
-
-  ur_dashboard_->commandPowerOff();
-  ur_dashboard_->commandClearOperationalMode();
-  ur_dashboard_->commandPowerOn();
-  my_primary->commandBrakeRelease();
-  my_primary->stop();
-
-  ROS_INFO("Create UR_Driver");
-  urcl::UrDriverConfiguration urDriverConfig;
-  urDriverConfig.robot_ip = robot_ip_;
-  urDriverConfig.script_file = urscript_file_path_;
-  urDriverConfig.output_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_output_recipe.txt";
-  urDriverConfig.input_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_input_recipe.txt";
-  urDriverConfig.headless_mode = true;
-  urDriverConfig.handle_program_state = &handleRobotProgramState;
-
-  ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
-  ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
-  ur_driver_->startRTDECommunication();
-  ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
-
-  bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
-  ROS_INFO_STREAM("checkCalibration: " << (calibValid ? "VALID" : "INVALID"));
-  if (!calibValid)
-  {
-    ROS_ERROR_STREAM("The calibration parameters of the connected robot don't match the ones from the given kinematics "
-                     "config file. Please be aware that this can lead to critical inaccuracies of tcp positions. Use "
-                     "the ur_calibration tool to extract the correct calibration from the robot and pass that into the "
-                     "description. See "
-                     "[https://github.com/UniversalRobots/Universal_Robots_ROS_Driver#extract-calibration-information] "
-                     "for details.");
-  }
-
-  std::thread joint_states_pub(&thread_pub_joint_states);
-  ROS_INFO_STREAM("Started joint_states publisher (ID: " << joint_states_pub.get_id() << ")");
-
-  ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
-  ur_primary_ = ur_driver_->getPrimaryClient();
+  nh_->param<double>("dt_pub_pose", dt_pub_pose_, 0.02);
 
   ROS_INFO("Load and parse URDF");
 
@@ -675,12 +679,69 @@ int main(int argc, char** argv)
     shutdown("Error building kdl_chain_ll_");
     return 1;
   }
+
   ROS_INFO("KDL Chains ready");
 
   num_of_joints_ = kdl_chain_ee_.getNrOfJoints();
-  q_msr_.resize(num_of_joints_);
   fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
   fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
+  q_msr_ = KDL::JntArray(num_of_joints_);
+  qd_msr_ = KDL::JntArray(num_of_joints_);
+
+  ROS_INFO("Starting Primary");
+  auto my_primary = std::make_shared<urcl::primary_interface::PrimaryClient>(robot_ip_, notifier);
+  my_primary->start();
+
+  ROS_INFO("Starting Dashboard");
+  ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));
+  if (!ur_dashboard_->connect(3, std::chrono::seconds(5)))
+  {
+    URCL_LOG_ERROR("Could not connect to dashboard");
+    return 1;
+  }
+
+  timeval timeout;
+  timeout.tv_sec = 3;
+  timeout.tv_usec = 0;
+  ur_dashboard_->setReceiveTimeout(timeout);
+
+  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandClearOperationalMode();
+  // ur_dashboard_->commandPowerOn();
+  my_primary->commandBrakeRelease();
+  my_primary->stop();
+
+  ROS_INFO("Create UR_Driver");
+  urcl::UrDriverConfiguration urDriverConfig;
+  urDriverConfig.robot_ip = robot_ip_;
+  urDriverConfig.script_file = urscript_file_path_;
+  urDriverConfig.output_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_output_recipe.txt";
+  urDriverConfig.input_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_input_recipe.txt";
+  urDriverConfig.headless_mode = true;
+  urDriverConfig.handle_program_state = &handleRobotProgramState;
+
+  ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
+  ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
+  ur_driver_->startRTDECommunication();
+  ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
+
+  std::thread read_rtde_data {&thread_read_rtde_data};
+  ROS_INFO_STREAM("Started RTDE data reader thread [ID: " << read_rtde_data.get_id() << " ]");
+
+  bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
+  ROS_INFO_STREAM("checkCalibration: " << (calibValid ? "VALID" : "INVALID"));
+  if (!calibValid)
+  {
+    ROS_ERROR_STREAM("The calibration parameters of the connected robot don't match the ones from the given kinematics "
+                     "config file. Please be aware that this can lead to critical inaccuracies of tcp positions. Use "
+                     "the ur_calibration tool to extract the correct calibration from the robot and pass that into the "
+                     "description. See "
+                     "[https://github.com/UniversalRobots/Universal_Robots_ROS_Driver#extract-calibration-information] "
+                     "for details.");
+  }
+
+  ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
+  ur_primary_ = ur_driver_->getPrimaryClient();
 
   // Load Tool
   double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
@@ -799,8 +860,14 @@ int main(int argc, char** argv)
   }
 
   // Advertise publishers and services
+  std::thread joint_states_pub(&thread_pub_joint_states);
+  ROS_INFO_STREAM("Started joint_states publisher thread [ID: " << joint_states_pub.get_id() << "]");
+
   std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
-  ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
+  ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher thread [ID: " << robot_curr_pose_pub.get_id() << "]");
+
+  std::thread wrench_pub(&thread_pub_wrench);
+  ROS_INFO_STREAM("Started wrench publisher thread [ID: " << wrench_pub.get_id() << "]");
 
   ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
   ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
