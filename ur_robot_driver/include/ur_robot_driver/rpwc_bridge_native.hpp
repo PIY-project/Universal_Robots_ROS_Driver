@@ -30,6 +30,7 @@
 #include <actionlib/client/terminal_state.h>
 
 // Packages includes
+#include <rpwc/rpwc_enum.h>
 #include <rpwc_msgs/setController.h>
 #include <rpwc_msgs/getController.h>
 #include <rpwc_msgs/robotArmState.h>
@@ -62,7 +63,7 @@ void thread_keep_alive();
 void thread_read_rtde_data();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
+void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
@@ -73,9 +74,9 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
 //           Services Callbacks
 // -----------------------------------------
 
-bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::setController::Response& res);
-bool callback_get_controller(rpwc_msgs::getController::Request& req, rpwc_msgs::getController::Response& res);
-bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs::robotArmState::Response& res);
+bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
+bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
+bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -84,42 +85,49 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
 class CartesianMove
 {
 public:
-  CartesianMove(std::string name);
+    CartesianMove(std::string name);
 
-  ~CartesianMove(void);
+    ~CartesianMove();
 
 private:
-  void goal_callback();
-  void preempt_callback();
+    void goal_callback();
+    void execution_thread();
+    void preempt_callback();
 
-  CartesianAS as;
-  rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
-  rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
-  rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
+    CartesianAS as;
+    rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
+    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
+    rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
+    std::unique_ptr<std::thread> work_thread;
+    std::atomic<bool> execution_done{false}, preempted{false};
 };
 
 class JointsMove
 {
 public:
-  JointsMove(std::string name);
+    JointsMove(std::string name);
 
-  ~JointsMove(void);
+    ~JointsMove();
 
 private:
-  void goal_callback();
-  void preempt_callback();
+    void goal_callback();
+    void execution_thread();
+    void preempt_callback();
 
-  JointsAS as;
-  rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
-  rpwc_msgs::nativeJointsCommandsResult rpwc_result;
-  rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
+    JointsAS as;
+    rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
+    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
+    rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
+    std::vector<KDL::JntArray> active_goal_waypoints;
+    std::unique_ptr<std::thread> work_thread;
+    std::atomic<bool> execution_done{false}, preempted{false};
 };
 
 // -----------------------------------------
 //               Variables
 // -----------------------------------------
 
-ros::NodeHandle* nh_;
+ros::NodeHandle *nh_;
 std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
 float freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
@@ -138,4 +146,4 @@ std::mutex send_command_mutex_, q_mutex_, wrench_mutex_;
 urcl::vector6d_t wrench_;
 double dt_pub_pose_;
 
-#endif  // UR_RPWC_BRIDGE_NATIVE_HPP
+#endif // UR_RPWC_BRIDGE_NATIVE_HPP
