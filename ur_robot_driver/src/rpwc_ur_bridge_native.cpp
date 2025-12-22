@@ -300,6 +300,32 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
   return true;
 }
 
+bool callback_set_speed_override(rpwc_msgs::setSpeedOverride::Request& req, rpwc_msgs::setSpeedOverride::Response& res)
+{
+  if (req.ratio.data <= 0.0 || req.ratio.data > 1.0)
+  {
+    res.success.data = false;
+    res.info.data = "Speed override should be a value between 0.0 (excluded) and 1.0 (included)";
+    return true;
+  }
+
+  speed_override_ = req.ratio.data;
+  res.success.data = ur_driver_->getRTDEWriter().sendSpeedSlider(speed_override_);
+
+  if (!res.success.data)
+    res.info.data = "Failed to set speed override, check log for more info";
+
+  return true;
+}
+
+bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request& req, rpwc_msgs::getSpeedOverride::Response& res)
+{
+  res.ratio.data = speed_override_;
+  res.success.data = true;
+  return true;
+}
+
+
 // -----------------------------------------
 //             Actions Servers
 // -----------------------------------------
@@ -477,6 +503,7 @@ int main(int argc, char** argv)
   urcl::comm::INotifier notifier;
   last_controller_started_ = 0;
   freedrive_ = false;
+  speed_override_ = 1.0;
 
   name_space_ = nh_->getNamespace();
 
@@ -798,12 +825,21 @@ int main(int argc, char** argv)
     return 2;
   }
 
+  if (!ur_driver_->getRTDEWriter().sendSpeedSlider(speed_override_))
+  {
+    ROS_FATAL("Failed to set speed slider");
+    shutdown("speed slider set failed");
+    return 2;
+  }
+
   // Advertise publishers and services
   std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
   ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
 
   ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
   ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
+  ros::ServiceServer set_speed_override_srv = nh_->advertiseService<rpwc_msgs::setSpeedOverride::RequestType, rpwc_msgs::setSpeedOverride::ResponseType>("set_speed_override", &callback_set_speed_override);
+  ros::ServiceServer get_speed_override_srv = nh_->advertiseService<rpwc_msgs::getSpeedOverride::RequestType, rpwc_msgs::getSpeedOverride::ResponseType>("get_speed_override", &callback_get_speed_override);
 
   CartesianMove cart_act_srv("native_cartesian_commands");
   JointsMove joint_act_srv("native_joints_commands");

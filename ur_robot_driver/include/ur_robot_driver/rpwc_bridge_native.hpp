@@ -35,6 +35,8 @@
 #include <rpwc_msgs/RobotArmStateStamped.h>
 #include <rpwc_msgs/nativeCartesianCommandsAction.h>
 #include <rpwc_msgs/nativeJointsCommandsAction.h>
+#include <rpwc_msgs/setSpeedOverride.h>
+#include <rpwc_msgs/getSpeedOverride.h>
 
 // UR Client Library includes
 #include <ur_client_library/log.h>
@@ -133,5 +135,6 @@ Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
 std::mutex send_command_mutex_;
+double speed_override_;
 
 #endif  // UR_RPWC_BRIDGE_NATIVE_HPP
