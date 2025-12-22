@@ -35,6 +35,12 @@ void thread_read_rtde_data()
     {
         data_pkg = ur_driver_->getDataPackage();
 
+        if (!data_pkg)
+        {
+            rate.sleep();
+            continue;
+        }
+
         // Joints
         q_mutex_.lock();
         data_pkg->getData<urcl::vector6d_t>("actual_q", robData);
