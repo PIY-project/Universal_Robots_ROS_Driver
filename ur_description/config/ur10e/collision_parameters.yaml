@@ -1,0 +1,9 @@
+never_collide:
+    - ["L1", "L3"]
+    - ["L2", "L4"]
+    - ["L3", "L5"]
+    - ["L3", "L6"]
+    - ["L4", "L6"]
+    - ["L2", "base"]
+
+ignored_robot_links: ["L6", "L5"]
