@@ -786,11 +786,19 @@ int main(int argc, char** argv)
     shutdown("Param cog missing");
     return 1;
   }
+  if (cog.size() != 3)
+  {
+    ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' must contain exactly 3 elements");
+    shutdown("Param cog invalid");
+    return 1;
+  }
 
   urcl::vector3d_t cog_ur;
-  cog_ur[0] = cog[0];
-  cog_ur[1] = cog[1];
-  cog_ur[2] = cog[2];
+  KDL::Vector p_last(cog[0], cog[1], cog[2]);
+  KDL::Vector p_tool0 = t_tool02LastLink * p_last;
+  cog_ur[0] = p_tool0.x();
+  cog_ur[1] = p_tool0.y();
+  cog_ur[2] = p_tool0.z();
   if (!ur_driver_->setPayload(payload, cog_ur))
   {
     ROS_FATAL_STREAM("Failed to set payload");
