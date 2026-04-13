@@ -1,4 +1,5 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
+#include <ur_client_library/ur/robot_receive_timeout.h>
 
 // -----------------------------------------
 //                Functions
@@ -177,7 +178,7 @@ void shutdown(std::string reason)
   ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
   ur_primary_->commandStop();
-  ur_dashboard_->commandPowerOff();
+  // ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
   ur_dashboard_->disconnect();
   ur_driver_->stopControl();
@@ -273,7 +274,7 @@ bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::
   last_controller_started_ = 2;
   std::lock_guard<std::mutex> lock(send_command_mutex_);
   freedrive_ = true;
-  res.result.data = ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START);
+  res.result.data = ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START, freedrive_params_, urcl::RobotReceiveTimeout::millisec(200));
   return true;
 }
 
@@ -297,6 +298,87 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
     tmp.data = q_msr_(i);
     res.joint_position.push_back(tmp);
   }
+  return true;
+}
+
+bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpwc_msgs::setFreeJogParams::Response& res)
+{
+  if(!freedrive_)
+  {
+    res.success.data = false;
+    res.info.data = "Robot must be in Free Jog mode to set params";
+  }
+
+  switch (req.mode.data)
+  {
+  case 0:   // Joints
+    freedrive_params_.lock_x = false;
+    freedrive_params_.lock_y = false;
+    freedrive_params_.lock_z = false;
+    freedrive_params_.lock_rx = false;
+    freedrive_params_.lock_ry = false;
+    freedrive_params_.lock_rz = false;
+    freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame::BASE;
+    break;
+
+  case 1:   // Cartesian
+    freedrive_params_.lock_x = req.lock_x.data;
+    freedrive_params_.lock_y = req.lock_y.data;
+    freedrive_params_.lock_z = req.lock_z.data;
+    freedrive_params_.lock_rx = true;
+    freedrive_params_.lock_ry = true;
+    freedrive_params_.lock_rz = true;
+    freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame(req.ref_frame.data);
+    break;
+
+  case 2:   // Reorient
+    freedrive_params_.lock_x = true;
+    freedrive_params_.lock_y = true;
+    freedrive_params_.lock_z = true;
+    freedrive_params_.lock_rx = req.lock_x.data;
+    freedrive_params_.lock_ry = req.lock_y.data;
+    freedrive_params_.lock_rz = req.lock_z.data;
+    freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame::BASE;
+    break;
+
+  default:
+    ROS_ERROR_STREAM("Unknow Free Jog mode: " << req.mode.data);
+    res.success.data = false;
+    return true;
+  }
+
+  freedrive_params_.mode = urcl::control::FreedriveMode(req.mode.data);
+  res.success.data = true;
+
+  return true;
+}
+
+bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpwc_msgs::getFreeJogParams::Response& res)
+{  
+  res.ref_frame.data = urcl::toUnderlying(freedrive_params_.ref_frame);
+  res.mode.data = urcl::toUnderlying(freedrive_params_.mode);
+
+  switch (freedrive_params_.mode)
+  {
+  case urcl::control::FreedriveMode::JOINTS:
+    res.lock_x.data = false;
+    res.lock_y.data = false;
+    res.lock_z.data = false;
+    break;
+  
+  case urcl::control::FreedriveMode::CARTESIAN:
+    res.lock_x.data = freedrive_params_.lock_x;
+    res.lock_y.data = freedrive_params_.lock_y;
+    res.lock_z.data = freedrive_params_.lock_z;
+    break;
+
+  case urcl::control::FreedriveMode::REORIENT:
+    res.lock_x.data = freedrive_params_.lock_rx;
+    res.lock_y.data = freedrive_params_.lock_ry;
+    res.lock_z.data = freedrive_params_.lock_rz;
+    break;
+  }
+
   return true;
 }
 
@@ -477,6 +559,7 @@ int main(int argc, char** argv)
   urcl::comm::INotifier notifier;
   last_controller_started_ = 0;
   freedrive_ = false;
+  freedrive_params_ = {};
 
   name_space_ = nh_->getNamespace();
 
@@ -562,9 +645,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  ur_dashboard_->commandPowerOff();
+  // ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
-  ur_dashboard_->commandPowerOn();
+  // ur_dashboard_->commandPowerOn();
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
@@ -812,6 +895,8 @@ int main(int argc, char** argv)
 
   ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
   ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
+  ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);
+  ros::ServiceServer get_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::getFreeJogParams::RequestType, rpwc_msgs::getFreeJogParams::ResponseType>("get_free_jog_params", &callback_get_free_jog_params);
 
   CartesianMove cart_act_srv("native_cartesian_commands");
   JointsMove joint_act_srv("native_joints_commands");

@@ -35,6 +35,8 @@
 #include <rpwc_msgs/RobotArmStateStamped.h>
 #include <rpwc_msgs/nativeCartesianCommandsAction.h>
 #include <rpwc_msgs/nativeJointsCommandsAction.h>
+#include <rpwc_msgs/setFreeJogParams.h>
+#include <rpwc_msgs/getFreeJogParams.h>
 
 // UR Client Library includes
 #include <ur_client_library/log.h>
@@ -45,6 +47,8 @@
 #include <ur_client_library/ur/instruction_executor.h>
 #include <ur_client_library/ur/robot_receive_timeout.h>
 #include <ur_client_library/primary/primary_client.h>
+#include <ur_client_library/control/reverse_interface.h>
+
 
 // -----------------------------------------
 //                 Defines
@@ -74,6 +78,8 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
 bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::setController::Response& res);
 bool callback_get_controller(rpwc_msgs::getController::Request& req, rpwc_msgs::getController::Response& res);
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs::robotArmState::Response& res);
+bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpwc_msgs::setFreeJogParams::Response& res);
+bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpwc_msgs::getFreeJogParams::Response& res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -133,5 +139,6 @@ Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
 std::mutex send_command_mutex_;
+urcl::control::FreedriveParams freedrive_params_;
 
 #endif  // UR_RPWC_BRIDGE_NATIVE_HPP
