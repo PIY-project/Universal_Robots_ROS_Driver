@@ -37,7 +37,7 @@
 #include <rpwc_msgs/nativeJointsCommandsAction.h>
 #include <rpwc_msgs/setFreeJogParams.h>
 #include <rpwc_msgs/getFreeJogParams.h>
-
+#include <rpwc_msgs/setPayload.h>
 // UR Client Library includes
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
@@ -140,5 +140,6 @@ geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
 std::mutex send_command_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
+KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 
 #endif  // UR_RPWC_BRIDGE_NATIVE_HPP

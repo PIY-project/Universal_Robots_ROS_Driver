@@ -546,6 +546,36 @@ void JointsMove::preempt_callback()
   send_command_mutex_.unlock();
 }
 
+
+bool callback_set_payload(rpwc_msgs::setPayload::Request& req, rpwc_msgs::setPayload::Response& res)
+{
+  if(req.mass.data < 0)
+  {
+    res.result.data = false;
+    res.info.data = "Payload mass cannot be negative";
+    return true;
+  }
+  if(req.center_of_mass.x == 0 && req.center_of_mass.y == 0 && req.center_of_mass.z == 0)
+  {
+    res.result.data = false;
+    res.info.data = "Center of mass values must be different than zero";
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(send_command_mutex_);
+  double payload = req.mass.data;
+  
+
+  urcl::vector3d_t cog_ur;
+  KDL::Vector p_last(req.center_of_mass.x, req.center_of_mass.y, req.center_of_mass.z);
+  KDL::Vector p_tool0 = t_tool02LastLink * p_last;
+  cog_ur[0] = p_tool0.x();
+  cog_ur[1] = p_tool0.y();
+  cog_ur[2] = p_tool0.z();
+
+  res.result.data = ur_driver_->setPayload(payload,cog_ur);
+  return true;
+}
+
 // -----------------------------------------
 //                  Main
 // -----------------------------------------
@@ -830,7 +860,7 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
+  t_tool02LastLink = KDL::Frame::Identity();
   t_tool02LastLink.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);
   KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
   t_LastLink2EE.p.data[0] = x_pos_ee;
@@ -898,6 +928,7 @@ int main(int argc, char** argv)
   ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);
   ros::ServiceServer get_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::getFreeJogParams::RequestType, rpwc_msgs::getFreeJogParams::ResponseType>("get_free_jog_params", &callback_get_free_jog_params);
 
+  ros::ServiceServer set_payload_srv = nh_->advertiseService<rpwc_msgs::setPayload::RequestType, rpwc_msgs::setPayload::ResponseType>("rpwc_set_payload", &callback_set_payload);
   CartesianMove cart_act_srv("native_cartesian_commands");
   JointsMove joint_act_srv("native_joints_commands");
 
