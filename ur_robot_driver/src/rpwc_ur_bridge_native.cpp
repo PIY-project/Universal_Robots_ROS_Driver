@@ -1,5 +1,4 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
-#include <ur_client_library/ur/robot_receive_timeout.h>
 
 // -----------------------------------------
 //                Functions
@@ -196,12 +195,12 @@ bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> wayp
   return ur_instruction_executor_->executeMotion(waypoints);
 }
 
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses, bool move_until_contact)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   KDL::Rotation rot;
   urcl::Pose pose;
-  double vel, acc;
+  double vel, acc, blend;
 
   for (long unsigned int i = 0; i < waypoints.size(); i++)
   {
@@ -212,10 +211,11 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
     pose.rx = rot.GetRot().x();
     pose.ry = rot.GetRot().y();
     pose.rz = rot.GetRot().z();
-    vel = max_speed_linear_ * velocities[i];
+    vel = move_until_contact ? 0.1 : max_speed_linear_ * velocities[i];
     acc = max_acceleration_linear_ * accelerations[i];
+    blend = move_until_contact ? 0.0 : blending_radiuses[i];
 
-    targets.push_back(std::make_shared<urcl::control::MoveLPrimitive>(pose, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
+    targets.push_back(std::make_shared<urcl::control::MoveLPrimitive>(pose, blend, std::chrono::milliseconds(0), acc, vel));
   }
 
   return exec_traj(targets);
@@ -241,6 +241,12 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities,
   }
 
   return exec_traj(targets);
+}
+
+void callback_tool_contact_result(urcl::control::ToolContactResult res)
+{
+  contact_detected_.store(true);
+  ROS_INFO_STREAM("Tool contact result: " << urcl::toUnderlying(res));
 }
 
 // -----------------------------------------
@@ -421,6 +427,8 @@ CartesianMove::CartesianMove(std::string name) : as(*nh_, name, false)
   as.registerGoalCallback(boost::bind(&CartesianMove::goal_callback, this));
   as.registerPreemptCallback(boost::bind(&CartesianMove::preempt_callback, this));
 
+  ur_driver_->registerToolContactResultCallback(&callback_tool_contact_result);
+
   as.start();
 }
 
@@ -440,18 +448,8 @@ void CartesianMove::goal_callback()
   ROS_INFO("[Cartesian Move]: Accepting new goal");
   rpwc_goal = as.acceptNewGoal();
 
-  long unsigned int len = rpwc_goal->Poses.size();
-  if (rpwc_goal->types.size() < len)
-    len = rpwc_goal->types.size();
-  if (rpwc_goal->velocities.size() < len)
-    len = rpwc_goal->velocities.size();
-  if (rpwc_goal->accelerations.size() < len)
-    len = rpwc_goal->accelerations.size();
-  if (rpwc_goal->zone_radiuses.size() < len)
-    len = rpwc_goal->zone_radiuses.size();
-
-  ROS_INFO_STREAM("[Cartesian Move]: Max valid poses: " << len);
-  if (len == 0)
+  const auto pose_count = rpwc_goal->Poses.size();
+  if (pose_count == 0)
   {
     ROS_WARN("[Cartesian Move]: No valid poses found, aborting");
     rpwc_result.success = false;
@@ -460,11 +458,40 @@ void CartesianMove::goal_callback()
     return;
   }
 
+  if (rpwc_goal->types.size() != pose_count || rpwc_goal->velocities.size() != pose_count || rpwc_goal->accelerations.size() != pose_count || rpwc_goal->zone_radiuses.size() != pose_count)
+  {
+    ROS_ERROR_STREAM("[Cartesian Move]: Mismatched input lengths, poses:" << pose_count << " | types:" << rpwc_goal->types.size()
+                     << " | velocities:" << rpwc_goal->velocities.size() << " | accelerations:" << rpwc_goal->accelerations.size()
+                     << " | zone_radiuses:" << rpwc_goal->zone_radiuses.size());
+    rpwc_result.success = false;
+    rpwc_result.msg = "Mismatched cartesian input lengths";
+    as.setAborted(rpwc_result, rpwc_result.msg);
+    return;
+  }
+
+  bool move_until_contact = false;
   for (auto& type : rpwc_goal->types)
   {
+    if (type == rpwc_goal->UNTIL_CONTACT_MOVE)
+    {
+      move_until_contact = true;
+
+      // Check if input data is correct
+      if (rpwc_goal->Poses.size() != 1 || rpwc_goal->types.size() != 1)
+      {
+        ROS_ERROR_STREAM("[Cartesian Move]: Move Until Contact only supports 1 target, got: " << rpwc_goal->Poses.size() << " (poses) " << rpwc_goal->types.size() << " (types)");
+        rpwc_result.success = false;
+        rpwc_result.msg = "Invalid target count";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+      }
+
+      break;
+    }
+
     if (type != rpwc_goal->LINEAR_MOVE)
     {
-      ROS_ERROR_STREAM("[Cartesian Move]: Uknown move type: '" << type << "' aborting goal");
+      ROS_ERROR_STREAM("[Cartesian Move]: Uknown/Unsupported move type: '" << type << "' aborting goal");
       rpwc_result.success = false;
       rpwc_result.msg = "Uknown move type";
       as.setAborted(rpwc_result, rpwc_result.msg);
@@ -472,8 +499,24 @@ void CartesianMove::goal_callback()
     }
   }
 
-  ROS_INFO("[Cartesian Move]: Executing trajectory");
-  rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
+  if (move_until_contact)
+    execute_until_contact_move();
+  else
+    execute_cartesian_move();
+}
+
+void CartesianMove::preempt_callback()
+{
+  ROS_INFO("[Cartesian Move]: Goal preempted");
+  as.setPreempted();
+  ur_instruction_executor_->cancelMotion();
+  send_command_mutex_.unlock();
+}
+
+void CartesianMove::execute_cartesian_move()
+{
+  ROS_INFO("[Cartesian Move]: Executing cartesian trajectory");
+  rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses, false);
 
   if (!rpwc_result.success)
   {
@@ -486,14 +529,80 @@ void CartesianMove::goal_callback()
   ROS_INFO("[Cartesian Move]: Goal completed");
   rpwc_result.msg = "Goal succeded";
   as.setSucceeded(rpwc_result, rpwc_result.msg);
+  return;
 }
 
-void CartesianMove::preempt_callback()
+void CartesianMove::execute_until_contact_move()
 {
-  ROS_INFO("[Cartesian Move]: Goal preempted");
-  as.setPreempted();
-  ur_instruction_executor_->cancelMotion();
-  send_command_mutex_.unlock();
+  ROS_INFO("[Cartesian Move]: Executing move until contact target");
+
+  if (!ur_driver_->startToolContact(rpwc_goal->force_threshold))
+  {
+    rpwc_result.msg = "Failed to start tool contact";
+    rpwc_result.success = false;
+    ROS_ERROR_STREAM("[Cartesian Move]" << rpwc_result.msg);
+    as.setAborted(rpwc_result, rpwc_result.msg);
+    return;
+  }
+
+  movement_finished_.store(false);
+  contact_detected_.store(false);
+
+  std::thread move_thread = std::thread([&]{
+    rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses, true);
+    movement_finished_.store(true);
+  });
+
+  while (!contact_detected_.load() && !movement_finished_.load()){
+    ros::Duration(0.1).sleep();
+  }
+
+  auto safe_end = [this, &move_thread](std::string msg, bool success) -> void
+  {
+    if (move_thread.joinable())
+    {
+      move_thread.join();
+    }
+
+    if (!ur_driver_->endToolContact())
+    {
+     rpwc_result.success = false;
+     rpwc_result.msg = "Failed to end tool contact";
+     ROS_ERROR_STREAM("[Cartesian Move]: " << rpwc_result.msg);
+     as.setAborted(rpwc_result, rpwc_result.msg);
+     return;
+    }
+
+    rpwc_result.success = success;
+    rpwc_result.msg = msg;
+
+    if (success)
+    {
+      ROS_INFO_STREAM("[Cartesian Move]: " << rpwc_result.msg);
+      as.setSucceeded(rpwc_result, rpwc_result.msg);
+    }
+    else
+    {
+      ROS_ERROR_STREAM("[Cartesian Move]: " << rpwc_result.msg);
+      as.setAborted(rpwc_result, rpwc_result.msg);
+    }
+
+    return;
+  };
+
+  if (!movement_finished_.load())
+  {
+    ur_instruction_executor_->cancelMotion();
+    return safe_end("Contact detected", true);
+  }
+
+  if (!rpwc_result.success)
+  return safe_end("Movement execution failed", false);
+
+  if (rpwc_goal->success_only_on_contact)
+    return safe_end("Movement execution terminated without contact detection", false);
+
+  return safe_end("Movement execution completed", true);
 }
 
 // Joints Action Server
@@ -521,20 +630,24 @@ void JointsMove::goal_callback()
   ROS_INFO("[Joints Move]: Accepting new goal");
   rpwc_goal = as.acceptNewGoal();
 
-  long unsigned int len = rpwc_goal->targets.size();
-  if (rpwc_goal->velocities.size() < len)
-    len = rpwc_goal->velocities.size();
-  if (rpwc_goal->accelerations.size() < len)
-    len = rpwc_goal->accelerations.size();
-  if (rpwc_goal->zone_radiuses.size() < len)
-    len = rpwc_goal->zone_radiuses.size();
-
-  ROS_INFO_STREAM("[Joints Move]: Max valid poses: " << len);
-  if (len == 0)
+  const auto target_count = rpwc_goal->targets.size();
+  if (target_count == 0)
   {
     ROS_WARN("[Joints Move]: No valid poses found, aborting");
     rpwc_result.success = false;
     rpwc_result.msg = "No data found";
+    as.setAborted(rpwc_result, rpwc_result.msg);
+    return;
+  }
+
+  if (rpwc_goal->velocities.size() != target_count || rpwc_goal->accelerations.size() != target_count ||
+      rpwc_goal->zone_radiuses.size() != target_count)
+  {
+    ROS_ERROR_STREAM("[Joints Move]: Mismatched input lengths. targets: " << target_count << " | velocities: "
+                     << rpwc_goal->velocities.size() << " | accelerations: " << rpwc_goal->accelerations.size()
+                     << " | zone_radiuses: " << rpwc_goal->zone_radiuses.size());
+    rpwc_result.success = false;
+    rpwc_result.msg = "Mismatched joint input lengths";
     as.setAborted(rpwc_result, rpwc_result.msg);
     return;
   }

@@ -68,8 +68,9 @@ void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::Jnt
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses, bool move_until_contact);
 bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses);
+void callback_tool_contact_result(urcl::control::ToolContactResult res);
 
 // -----------------------------------------
 //           Services Callbacks
@@ -95,6 +96,8 @@ public:
 private:
   void goal_callback();
   void preempt_callback();
+  void execute_cartesian_move();
+  void execute_until_contact_move();
 
   CartesianAS as;
   rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
@@ -141,5 +144,6 @@ std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solve
 std::mutex send_command_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
+std::atomic<bool> contact_detected_, movement_finished_;
 
 #endif  // UR_RPWC_BRIDGE_NATIVE_HPP
