@@ -178,7 +178,7 @@ void shutdown(std::string reason)
   ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
   ur_primary_->commandStop();
-  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
   ur_dashboard_->disconnect();
   ur_driver_->stopControl();
@@ -382,6 +382,35 @@ bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpw
   return true;
 }
 
+bool callback_set_payload(rpwc_msgs::setPayload::Request& req, rpwc_msgs::setPayload::Response& res)
+{
+  if(req.mass.data < 0)
+  {
+    res.result.data = false;
+    res.info.data = "Payload mass cannot be negative";
+    return true;
+  }
+  if(req.center_of_mass.x == 0 && req.center_of_mass.y == 0 && req.center_of_mass.z == 0)
+  {
+    res.result.data = false;
+    res.info.data = "Center of mass values must be different than zero";
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(send_command_mutex_);
+  double payload = req.mass.data;
+  
+
+  urcl::vector3d_t cog_ur;
+  KDL::Vector p_last(req.center_of_mass.x, req.center_of_mass.y, req.center_of_mass.z);
+  KDL::Vector p_tool0 = t_tool02LastLink * p_last;
+  cog_ur[0] = p_tool0.x();
+  cog_ur[1] = p_tool0.y();
+  cog_ur[2] = p_tool0.z();
+
+  res.result.data = ur_driver_->setPayload(payload,cog_ur);
+  return true;
+}
+
 // -----------------------------------------
 //             Actions Servers
 // -----------------------------------------
@@ -546,36 +575,6 @@ void JointsMove::preempt_callback()
   send_command_mutex_.unlock();
 }
 
-
-bool callback_set_payload(rpwc_msgs::setPayload::Request& req, rpwc_msgs::setPayload::Response& res)
-{
-  if(req.mass.data < 0)
-  {
-    res.result.data = false;
-    res.info.data = "Payload mass cannot be negative";
-    return true;
-  }
-  if(req.center_of_mass.x == 0 && req.center_of_mass.y == 0 && req.center_of_mass.z == 0)
-  {
-    res.result.data = false;
-    res.info.data = "Center of mass values must be different than zero";
-    return true;
-  }
-  std::lock_guard<std::mutex> lock(send_command_mutex_);
-  double payload = req.mass.data;
-  
-
-  urcl::vector3d_t cog_ur;
-  KDL::Vector p_last(req.center_of_mass.x, req.center_of_mass.y, req.center_of_mass.z);
-  KDL::Vector p_tool0 = t_tool02LastLink * p_last;
-  cog_ur[0] = p_tool0.x();
-  cog_ur[1] = p_tool0.y();
-  cog_ur[2] = p_tool0.z();
-
-  res.result.data = ur_driver_->setPayload(payload,cog_ur);
-  return true;
-}
-
 // -----------------------------------------
 //                  Main
 // -----------------------------------------
@@ -675,9 +674,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  // ur_dashboard_->commandPowerOff();
+  ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
-  // ur_dashboard_->commandPowerOn();
+  ur_dashboard_->commandPowerOn();
   my_primary->commandBrakeRelease();
   my_primary->stop();
 
