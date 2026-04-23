@@ -38,6 +38,8 @@
 #include <rpwc_msgs/setFreeJogParams.h>
 #include <rpwc_msgs/getFreeJogParams.h>
 #include <rpwc_msgs/setPayload.h>
+#include <rpwc/rpwc_enum.h>
+
 // UR Client Library includes
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>

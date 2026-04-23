@@ -447,6 +447,8 @@ void CartesianMove::goal_callback()
 {
   ROS_INFO("[Cartesian Move]: Accepting new goal");
   rpwc_goal = as.acceptNewGoal();
+  rpwc_result.completed_waypoints_count = 0;
+  rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NO_ERROR);
 
   const auto pose_count = rpwc_goal->Poses.size();
   if (pose_count == 0)
@@ -454,6 +456,7 @@ void CartesianMove::goal_callback()
     ROS_WARN("[Cartesian Move]: No valid poses found, aborting");
     rpwc_result.success = false;
     rpwc_result.msg = "No data found";
+    rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
     as.setAborted(rpwc_result, rpwc_result.msg);
     return;
   }
@@ -465,6 +468,7 @@ void CartesianMove::goal_callback()
                      << " | zone_radiuses:" << rpwc_goal->zone_radiuses.size());
     rpwc_result.success = false;
     rpwc_result.msg = "Mismatched cartesian input lengths";
+    rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
     as.setAborted(rpwc_result, rpwc_result.msg);
     return;
   }
@@ -482,6 +486,17 @@ void CartesianMove::goal_callback()
         ROS_ERROR_STREAM("[Cartesian Move]: Move Until Contact only supports 1 target, got: " << rpwc_goal->Poses.size() << " (poses) " << rpwc_goal->types.size() << " (types)");
         rpwc_result.success = false;
         rpwc_result.msg = "Invalid target count";
+        rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+      }
+
+      if (rpwc_goal->force_threshold < 0.0)
+      {
+        ROS_ERROR_STREAM("[Cartesian Move]: Move Until Contact requires force_threshold >= 0.0, got: " << rpwc_goal->force_threshold);
+        rpwc_result.success = false;
+        rpwc_result.msg = "Invalid force threshold";
+        rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
       }
@@ -494,6 +509,7 @@ void CartesianMove::goal_callback()
       ROS_ERROR_STREAM("[Cartesian Move]: Uknown/Unsupported move type: '" << type << "' aborting goal");
       rpwc_result.success = false;
       rpwc_result.msg = "Uknown move type";
+      rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
       as.setAborted(rpwc_result, rpwc_result.msg);
       return;
     }
@@ -522,12 +538,16 @@ void CartesianMove::execute_cartesian_move()
   {
     ROS_INFO("[Cartesian Move]: Goal aborted");
     rpwc_result.msg = "Goal failed";
+    rpwc_result.completed_waypoints_count = 0;
+    rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NATIVE_PATH_ERROR);
     as.setAborted(rpwc_result, rpwc_result.msg);
     return;
   }
 
   ROS_INFO("[Cartesian Move]: Goal completed");
   rpwc_result.msg = "Goal succeded";
+  rpwc_result.completed_waypoints_count = rpwc_goal->Poses.size();
+  rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NO_ERROR);
   as.setSucceeded(rpwc_result, rpwc_result.msg);
   return;
 }
@@ -540,6 +560,8 @@ void CartesianMove::execute_until_contact_move()
   {
     rpwc_result.msg = "Failed to start tool contact";
     rpwc_result.success = false;
+    rpwc_result.completed_waypoints_count = 0;
+    rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NATIVE_PATH_ERROR);
     ROS_ERROR_STREAM("[Cartesian Move]" << rpwc_result.msg);
     as.setAborted(rpwc_result, rpwc_result.msg);
     return;
@@ -557,7 +579,7 @@ void CartesianMove::execute_until_contact_move()
     ros::Duration(0.1).sleep();
   }
 
-  auto safe_end = [this, &move_thread](std::string msg, bool success) -> void
+  auto safe_end = [this, &move_thread](std::string msg, bool success, rpwc::errorArmMotionCode error_code, int completed_waypoints_count) -> void
   {
     if (move_thread.joinable())
     {
@@ -568,6 +590,8 @@ void CartesianMove::execute_until_contact_move()
     {
      rpwc_result.success = false;
      rpwc_result.msg = "Failed to end tool contact";
+     rpwc_result.completed_waypoints_count = 0;
+     rpwc_result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NATIVE_PATH_ERROR);
      ROS_ERROR_STREAM("[Cartesian Move]: " << rpwc_result.msg);
      as.setAborted(rpwc_result, rpwc_result.msg);
      return;
@@ -575,6 +599,8 @@ void CartesianMove::execute_until_contact_move()
 
     rpwc_result.success = success;
     rpwc_result.msg = msg;
+    rpwc_result.error_code = static_cast<int16_t>(error_code);
+    rpwc_result.completed_waypoints_count = completed_waypoints_count;
 
     if (success)
     {
@@ -593,16 +619,16 @@ void CartesianMove::execute_until_contact_move()
   if (!movement_finished_.load())
   {
     ur_instruction_executor_->cancelMotion();
-    return safe_end("Contact detected", true);
+    return safe_end("Contact detected", true, rpwc::errorArmMotionCode::NO_ERROR, 0);
   }
 
   if (!rpwc_result.success)
-  return safe_end("Movement execution failed", false);
+  return safe_end("Movement execution failed", false, rpwc::errorArmMotionCode::NATIVE_PATH_ERROR, 0);
 
   if (rpwc_goal->success_only_on_contact)
-    return safe_end("Movement execution terminated without contact detection", false);
+    return safe_end("Movement execution terminated without contact detection", false, rpwc::errorArmMotionCode::NO_CONTACT_DETECTED, rpwc_goal->Poses.size());
 
-  return safe_end("Movement execution completed", true);
+  return safe_end("Movement execution completed", true, rpwc::errorArmMotionCode::NO_ERROR, rpwc_goal->Poses.size());
 }
 
 // Joints Action Server
