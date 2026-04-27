@@ -325,9 +325,9 @@ bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpw
     freedrive_params_.lock_x = req.lock_x.data;
     freedrive_params_.lock_y = req.lock_y.data;
     freedrive_params_.lock_z = req.lock_z.data;
-    freedrive_params_.lock_rx = true;
-    freedrive_params_.lock_ry = true;
-    freedrive_params_.lock_rz = true;
+    freedrive_params_.lock_rx = req.lock_rx.data;
+    freedrive_params_.lock_ry = req.lock_ry.data;
+    freedrive_params_.lock_rz = req.lock_rz.data;
     freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame(req.ref_frame.data);
     break;
 
@@ -335,9 +335,9 @@ bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpw
     freedrive_params_.lock_x = true;
     freedrive_params_.lock_y = true;
     freedrive_params_.lock_z = true;
-    freedrive_params_.lock_rx = req.lock_x.data;
-    freedrive_params_.lock_ry = req.lock_y.data;
-    freedrive_params_.lock_rz = req.lock_z.data;
+    freedrive_params_.lock_rx = req.lock_rx.data;
+    freedrive_params_.lock_ry = req.lock_ry.data;
+    freedrive_params_.lock_rz = req.lock_rz.data;
     freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame::BASE;
     break;
 
@@ -357,27 +357,12 @@ bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpw
 {  
   res.ref_frame.data = urcl::toUnderlying(freedrive_params_.ref_frame);
   res.mode.data = urcl::toUnderlying(freedrive_params_.mode);
-
-  switch (freedrive_params_.mode)
-  {
-  case urcl::control::FreedriveMode::JOINTS:
-    res.lock_x.data = false;
-    res.lock_y.data = false;
-    res.lock_z.data = false;
-    break;
-  
-  case urcl::control::FreedriveMode::CARTESIAN:
-    res.lock_x.data = freedrive_params_.lock_x;
-    res.lock_y.data = freedrive_params_.lock_y;
-    res.lock_z.data = freedrive_params_.lock_z;
-    break;
-
-  case urcl::control::FreedriveMode::REORIENT:
-    res.lock_x.data = freedrive_params_.lock_rx;
-    res.lock_y.data = freedrive_params_.lock_ry;
-    res.lock_z.data = freedrive_params_.lock_rz;
-    break;
-  }
+  res.lock_x.data = freedrive_params_.lock_x;
+  res.lock_y.data = freedrive_params_.lock_y;
+  res.lock_z.data = freedrive_params_.lock_z;
+  res.lock_rx.data = freedrive_params_.lock_rx;
+  res.lock_ry.data = freedrive_params_.lock_ry;
+  res.lock_rz.data = freedrive_params_.lock_rz;
 
   return true;
 }
