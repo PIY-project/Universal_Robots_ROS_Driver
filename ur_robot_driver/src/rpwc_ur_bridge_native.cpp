@@ -585,7 +585,6 @@ int main(int argc, char** argv)
   nh_ = new ros::NodeHandle();
   ros::AsyncSpinner spinner(2);
   urcl::setLogLevel(urcl::LogLevel::INFO);
-  urcl::comm::INotifier notifier;
   last_controller_started_ = 0;
   freedrive_ = false;
   freedrive_params_ = {};
@@ -657,10 +656,6 @@ int main(int argc, char** argv)
 
   nh_->param<float>("rate_rtde_hz", freq_rtde_hz_, 50.0);
 
-  ROS_INFO("Starting Primary");
-  auto my_primary = std::make_shared<urcl::primary_interface::PrimaryClient>(robot_ip_, notifier);
-  my_primary->start();
-
   ROS_INFO("Starting Dashboard");
   ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));
   if (!ur_dashboard_->connect(3, std::chrono::seconds(5)))
@@ -677,8 +672,7 @@ int main(int argc, char** argv)
   ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
   ur_dashboard_->commandPowerOn();
-  my_primary->commandBrakeRelease();
-  my_primary->stop();
+  ur_dashboard_->commandBrakeRelease();
 
   ROS_INFO("Create UR_Driver");
   urcl::UrDriverConfiguration urDriverConfig;
