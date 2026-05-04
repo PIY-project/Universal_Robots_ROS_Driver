@@ -93,7 +93,7 @@ void thread_pub_rob_curr_pose()
   curr_pose_ee_.header.frame_id = root_name_;
   curr_pose_ll_.header.frame_id = root_name_;
   rpwc_msgs::RobotArmStateStamped msg;
-  std_msgs::Float32 tmp;
+  std_msgs::Float64 tmp;
 
   ROS_INFO("[robot_curr_pose]: Start");
 
@@ -196,7 +196,7 @@ bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> wayp
   return ur_instruction_executor_->executeMotion(waypoints);
 }
 
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
+bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   KDL::Rotation rot;
@@ -221,7 +221,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
   return exec_traj(targets);
 }
 
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
+bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
 {
   std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
   urcl::vector6d_t joints;
@@ -294,7 +294,7 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
   res.poseBaseToLastLink.pose = curr_pose_ll_.pose;
   for (int i = 0; i < num_of_joints_; i++)
   {
-    std_msgs::Float32 tmp;
+    std_msgs::Float64 tmp;
     tmp.data = q_msr_(i);
     res.joint_position.push_back(tmp);
   }
@@ -654,7 +654,7 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  nh_->param<float>("rate_rtde_hz", freq_rtde_hz_, 50.0);
+  nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
 
   ROS_INFO("Starting Dashboard");
   ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));

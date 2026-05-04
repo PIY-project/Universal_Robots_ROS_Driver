@@ -266,7 +266,7 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request  &req, rpwc_msgs
 	res.poseBaseToEe.header.stamp = ros::Time::now();
 	for(int i = 0; i < q_msr_.rows(); i++)
 	{
-		std_msgs::Float32 tmp;
+		std_msgs::Float64 tmp;
 		tmp.data =  q_msr_(i);
 		res.joint_position.push_back(tmp);
 	}

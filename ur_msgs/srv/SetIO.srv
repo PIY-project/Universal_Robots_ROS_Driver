@@ -65,6 +65,6 @@ int8 STATE_TOOL_VOLTAGE_24V = 24
 # request fields
 int8 fun
 int8 pin
-float32 state
+float64 state
 ---
 bool success

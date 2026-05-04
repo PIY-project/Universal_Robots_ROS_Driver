@@ -457,7 +457,7 @@ bool JointPositionOneTaskInvKin::callback_check_trajectory(rpwc_msgs::checkTraje
 	res.q_final.clear();
 	for(int i = 0; i < num_of_joints_; i++)
 	{
-		std_msgs::Float32 tmpFloat;
+		std_msgs::Float64 tmpFloat;
 		tmpFloat.data = joint_cmd.data[i];
 		res.q_final.push_back(tmpFloat);
     std::cout << tmpFloat << std::endl;
