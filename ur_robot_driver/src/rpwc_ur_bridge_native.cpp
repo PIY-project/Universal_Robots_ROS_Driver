@@ -329,7 +329,7 @@ void thread_pub_io_signals_state()
 
     ros::Rate rate{freq_rtde_hz_};
 
-    ros::Publisher pub = nh_->advertise<rpwc_msgs::robotIOSignals>("io_signals_state", 1);
+    ros::Publisher pub = nh_->advertise<rpwc_msgs::robotIOSignals>("io_signals_state", 1, true);
     std::uint64_t bits, old_bits = 0x0;
     bool first_publish = true;
     rpwc_msgs::robotIOSignals msg;
