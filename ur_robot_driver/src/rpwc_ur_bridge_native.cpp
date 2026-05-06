@@ -303,12 +303,6 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
 
 bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpwc_msgs::setFreeJogParams::Response& res)
 {
-  if(!freedrive_)
-  {
-    res.success.data = false;
-    res.info.data = "Robot must be in Free Jog mode to set params";
-  }
-
   switch (req.mode.data)
   {
   case 0:   // Joints
@@ -325,20 +319,10 @@ bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpw
     freedrive_params_.lock_x = req.lock_x.data;
     freedrive_params_.lock_y = req.lock_y.data;
     freedrive_params_.lock_z = req.lock_z.data;
-    freedrive_params_.lock_rx = true;
-    freedrive_params_.lock_ry = true;
-    freedrive_params_.lock_rz = true;
+    freedrive_params_.lock_rx = req.lock_rx.data;
+    freedrive_params_.lock_ry = req.lock_ry.data;
+    freedrive_params_.lock_rz = req.lock_rz.data;
     freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame(req.ref_frame.data);
-    break;
-
-  case 2:   // Reorient
-    freedrive_params_.lock_x = true;
-    freedrive_params_.lock_y = true;
-    freedrive_params_.lock_z = true;
-    freedrive_params_.lock_rx = req.lock_x.data;
-    freedrive_params_.lock_ry = req.lock_y.data;
-    freedrive_params_.lock_rz = req.lock_z.data;
-    freedrive_params_.ref_frame = urcl::control::FreedriveReferenceFrame::BASE;
     break;
 
   default:
@@ -348,8 +332,27 @@ bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpw
   }
 
   freedrive_params_.mode = urcl::control::FreedriveMode(req.mode.data);
-  res.success.data = true;
 
+
+  if (freedrive_)
+  {
+    std::lock_guard<std::mutex> lock(send_command_mutex_);
+    if (!ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP))
+    {
+      res.success.data = false;
+      res.info.data = "Failed to disable Free Jog";
+      return true;
+    }
+
+    if (!ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START, freedrive_params_, urcl::RobotReceiveTimeout::millisec(200)))
+    {
+      res.success.data = false;
+      res.info.data = "Failed to enable Free Jog";
+      return true;
+    }
+  }
+
+  res.success.data = true;
   return true;
 }
 
@@ -357,27 +360,12 @@ bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpw
 {  
   res.ref_frame.data = urcl::toUnderlying(freedrive_params_.ref_frame);
   res.mode.data = urcl::toUnderlying(freedrive_params_.mode);
-
-  switch (freedrive_params_.mode)
-  {
-  case urcl::control::FreedriveMode::JOINTS:
-    res.lock_x.data = false;
-    res.lock_y.data = false;
-    res.lock_z.data = false;
-    break;
-  
-  case urcl::control::FreedriveMode::CARTESIAN:
-    res.lock_x.data = freedrive_params_.lock_x;
-    res.lock_y.data = freedrive_params_.lock_y;
-    res.lock_z.data = freedrive_params_.lock_z;
-    break;
-
-  case urcl::control::FreedriveMode::REORIENT:
-    res.lock_x.data = freedrive_params_.lock_rx;
-    res.lock_y.data = freedrive_params_.lock_ry;
-    res.lock_z.data = freedrive_params_.lock_rz;
-    break;
-  }
+  res.lock_x.data = freedrive_params_.lock_x;
+  res.lock_y.data = freedrive_params_.lock_y;
+  res.lock_z.data = freedrive_params_.lock_z;
+  res.lock_rx.data = freedrive_params_.lock_rx;
+  res.lock_ry.data = freedrive_params_.lock_ry;
+  res.lock_rz.data = freedrive_params_.lock_rz;
 
   return true;
 }
