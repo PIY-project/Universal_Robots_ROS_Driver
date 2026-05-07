@@ -178,7 +178,7 @@ void shutdown(std::string reason)
   ROS_WARN_STREAM("Shutting down node, reason: " << reason);
   nh_->shutdown();
   ur_primary_->commandStop();
-  ur_dashboard_->commandPowerOff();
+  // ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
   ur_dashboard_->disconnect();
   ur_driver_->stopControl();
@@ -657,9 +657,9 @@ int main(int argc, char** argv)
   timeout.tv_usec = 0;
   ur_dashboard_->setReceiveTimeout(timeout);
 
-  ur_dashboard_->commandPowerOff();
+  // ur_dashboard_->commandPowerOff();
   ur_dashboard_->commandClearOperationalMode();
-  ur_dashboard_->commandPowerOn();
+  // ur_dashboard_->commandPowerOn();
   ur_dashboard_->commandBrakeRelease();
 
   ROS_INFO("Create UR_Driver");
