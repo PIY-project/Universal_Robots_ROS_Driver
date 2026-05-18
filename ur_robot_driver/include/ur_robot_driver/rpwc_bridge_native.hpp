@@ -49,6 +49,8 @@
 // #include <rpwc_msgs/digitalIOSignal.h>
 // #include <rpwc_msgs/analogIOSignal.h>
 #include <rpwc_msgs/robotIOSignals.h>
+#include <rpwc_msgs/setSpeedOverride.h>
+#include <rpwc_msgs/getSpeedOverride.h>
 
 // UR Client Library includes
 #include <ur_client_library/log.h>
@@ -158,5 +160,6 @@ urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 urcl::vector6d_t rob_joints_, rob_joints_vel_;
 std::uint64_t rob_io_signals_;
+double speed_override_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP
