@@ -17,6 +17,12 @@
 #include <kdl/chain.hpp>
 #include <kdl/chainfksolverpos_recursive.hpp>
 #include <eigen3/Eigen/Dense>
+#include <array>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 // Ros includes
 #include <ros/ros.h>
@@ -38,6 +44,12 @@
 #include <rpwc_msgs/setFreeJogParams.h>
 #include <rpwc_msgs/getFreeJogParams.h>
 #include <rpwc_msgs/setPayload.h>
+#include <rpwc_msgs/getDigitalIOSignal.h>
+#include <rpwc_msgs/setDigitalIOSignal.h>
+// #include <rpwc_msgs/digitalIOSignal.h>
+// #include <rpwc_msgs/analogIOSignal.h>
+#include <rpwc_msgs/robotIOSignals.h>
+
 // UR Client Library includes
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
@@ -48,7 +60,6 @@
 #include <ur_client_library/ur/robot_receive_timeout.h>
 #include <ur_client_library/primary/primary_client.h>
 #include <ur_client_library/control/reverse_interface.h>
-
 
 // -----------------------------------------
 //                 Defines
@@ -62,9 +73,11 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 // -----------------------------------------
 
 void thread_keep_alive();
+void thread_handle_rtde();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool& first_quat, Eigen::Vector3d& pos, Eigen::Quaterniond& quat, Eigen::Quaterniond& quat_old);
+void thread_pub_io_signals_state();
+void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
@@ -75,11 +88,13 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 //           Services Callbacks
 // -----------------------------------------
 
-bool callback_set_controller(rpwc_msgs::setController::Request& req, rpwc_msgs::setController::Response& res);
-bool callback_get_controller(rpwc_msgs::getController::Request& req, rpwc_msgs::getController::Response& res);
-bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs::robotArmState::Response& res);
-bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request& req, rpwc_msgs::setFreeJogParams::Response& res);
-bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpwc_msgs::getFreeJogParams::Response& res);
+bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
+bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
+bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
+bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request &req, rpwc_msgs::setFreeJogParams::Response &res);
+bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request &req, rpwc_msgs::getFreeJogParams::Response &res);
+bool callback_set_digital_io_signal(rpwc_msgs::setDigitalIOSignal::Request &req, rpwc_msgs::setDigitalIOSignal::Response &res);
+bool callback_get_digital_io_signal(rpwc_msgs::getDigitalIOSignal::Request &req, rpwc_msgs::getDigitalIOSignal::Response &res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -88,42 +103,42 @@ bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request& req, rpw
 class CartesianMove
 {
 public:
-  CartesianMove(std::string name);
+    CartesianMove(std::string name);
 
-  ~CartesianMove(void);
+    ~CartesianMove(void);
 
 private:
-  void goal_callback();
-  void preempt_callback();
+    void goal_callback();
+    void preempt_callback();
 
-  CartesianAS as;
-  rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
-  rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
-  rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
+    CartesianAS as;
+    rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
+    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
+    rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
 };
 
 class JointsMove
 {
 public:
-  JointsMove(std::string name);
+    JointsMove(std::string name);
 
-  ~JointsMove(void);
+    ~JointsMove(void);
 
 private:
-  void goal_callback();
-  void preempt_callback();
+    void goal_callback();
+    void preempt_callback();
 
-  JointsAS as;
-  rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
-  rpwc_msgs::nativeJointsCommandsResult rpwc_result;
-  rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
+    JointsAS as;
+    rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
+    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
+    rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
 };
 
 // -----------------------------------------
 //               Variables
 // -----------------------------------------
 
-ros::NodeHandle* nh_;
+ros::NodeHandle *nh_;
 std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
@@ -138,8 +153,10 @@ bool freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
 Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
-std::mutex send_command_mutex_;
+std::mutex send_command_mutex_, joint_data_mutex_, io_signals_data_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
+urcl::vector6d_t rob_joints_, rob_joints_vel_;
+std::uint64_t rob_io_signals_;
 
-#endif  // UR_RPWC_BRIDGE_NATIVE_HPP
+#endif // UR_RPWC_BRIDGE_NATIVE_HPP
