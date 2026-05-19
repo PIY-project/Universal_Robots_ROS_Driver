@@ -1252,6 +1252,9 @@ int main(int argc, char **argv)
     std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
     ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
 
+    std::thread io_signals_state_pub(&thread_pub_io_signals_state);
+    ROS_INFO_STREAM("Started io_signals_state_pub publisher (ID: " << io_signals_state_pub.get_id() << ")");
+
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
     ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
     ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);
