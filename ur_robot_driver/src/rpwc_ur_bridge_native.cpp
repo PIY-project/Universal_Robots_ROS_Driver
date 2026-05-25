@@ -51,8 +51,7 @@ namespace
         return true;
     }
 
-    bool loadDigitalSignalGroup(const boost::property_tree::ptree &digital_inputs, const std::string &group_name, const size_t expected_size,
-                                const size_t bit_offset, std::string &error_message)
+    bool loadDigitalSignalGroup(const boost::property_tree::ptree &digital_inputs, const std::string &group_name, const size_t expected_size, const size_t bit_offset, std::string &error_message)
     {
         const auto group_tree = digital_inputs.get_child_optional(group_name);
         if (!group_tree)
@@ -158,6 +157,38 @@ namespace
 //                Functions
 // -----------------------------------------
 
+bool check_robot_mode(const urcl::RobotMode robot_mode)
+{
+    if (!ur_dashboard_)
+    {
+        throw std::invalid_argument("ur_dashboard");
+    }
+
+    std::string current_robot_mode;
+    if (!ur_dashboard_->commandRobotMode(current_robot_mode))
+    {
+        throw urcl::UrException("Failed to get robot mode");
+    }
+
+    return current_robot_mode == urcl::robotModeString(robot_mode);
+}
+
+bool check_safety_mode(const urcl::SafetyMode safety_mode)
+{
+    if (!ur_dashboard_)
+    {
+        throw std::invalid_argument("ur_dashboard");
+    }
+
+    std::string current_safety_mode;
+    if (!ur_dashboard_->commandSafetyMode(current_safety_mode))
+    {
+        throw urcl::UrException("Failed to get safety mode");
+    }
+
+    return current_safety_mode == urcl::safetyModeString(safety_mode);
+}
+
 void thread_keep_alive()
 {
     ros::Rate rate(freq_rtde_hz_);
@@ -178,18 +209,25 @@ void thread_keep_alive()
 
 void thread_handle_rtde()
 {
+    ROS_INFO("[handle_rtde]: Init");
     ros::Rate rate(freq_rtde_hz_);
-    std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg;
+    std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg{new urcl::rtde_interface::DataPackage(ur_driver_->getRTDEOutputRecipe())};
+
     joint_data_mutex_.lock();
     rob_joints_ = {};
     rob_joints_vel_ = {};
     joint_data_mutex_.unlock();
 
+    io_signals_data_mutex_.lock();
+    rob_io_signals_ = 0x0;
+    io_signals_data_mutex_.unlock();
+
+    ROS_INFO("[handle_rtde]: Start");
+    ur_driver_->startRTDECommunication(false);
+
     while (ros::ok())
     {
-        data_pkg = ur_driver_->getDataPackage();
-
-        if (data_pkg == nullptr)
+        if (!ur_driver_->getDataPackageBlocking(data_pkg))
         {
             rate.sleep();
             continue;
@@ -210,6 +248,8 @@ void thread_handle_rtde()
 
         rate.sleep();
     }
+
+    ROS_INFO("[handle_rtde]: Shutdown");
 }
 
 void thread_pub_joint_states()
@@ -236,19 +276,17 @@ void thread_pub_joint_states()
         msg.position.clear();
         msg.velocity.clear();
         msg.effort.clear();
+        msg.header.stamp = ros::Time::now();
 
         {
             std::lock_guard lk{joint_data_mutex_};
-            msg.header.stamp = ros::Time::now();
-
-            for (double joint : rob_joints_)
-            {
-                msg.position.push_back(joint);
-                msg.effort.push_back(0.0);
-            }
 
             for (int i = 0; i < num_of_joints_; i++)
+            {
                 q_msr_(i) = rob_joints_[i];
+                msg.position.push_back(rob_joints_[i]);
+                msg.effort.push_back(0.0);
+            }
 
             for (double vel : rob_joints_vel_)
                 msg.velocity.push_back(vel);
@@ -412,6 +450,9 @@ void shutdown(std::string reason)
     if (nh_ != nullptr)
         nh_->shutdown();
 
+    ur_driver::unregisterUrclLogHandler();
+    urcl::setLogLevel(urcl::LogLevel::INFO);
+
     if (ur_primary_)
     {
         ur_primary_->commandStop();
@@ -420,7 +461,8 @@ void shutdown(std::string reason)
 
     if (ur_dashboard_)
     {
-        ur_dashboard_->commandPowerOff();
+        if (!motor_state_on_start_)
+            ur_dashboard_->commandPowerOff();
         ur_dashboard_->commandClearOperationalMode();
         ur_dashboard_->disconnect();
     }
@@ -431,7 +473,42 @@ void shutdown(std::string reason)
 
 void handleRobotProgramState(bool program_running)
 {
-    ROS_INFO_STREAM("ProgamState changed: " << (program_running ? "RUNNING" : "STOPPED"));
+    ROS_WARN_STREAM("ProgamState changed: " << (program_running ? "RUNNING" : "STOPPED"));
+
+    std::string robot_mode;
+    if (!ur_dashboard_->commandRobotMode(robot_mode))
+    {
+        ROS_ERROR("Failed to get robot mode");
+        shutdown("Failed to get robot mode after program state change");
+        return;
+    }
+
+    std::string safety_mode;
+    if (!ur_dashboard_->commandSafetyMode(safety_mode))
+    {
+        ROS_ERROR("Failed to get safety mode");
+        shutdown("Failed to get safety mode after program state change");
+        return;
+    }
+
+    std::string safety_status;
+    if (!ur_dashboard_->commandSafetyStatus(safety_status))
+    {
+        ROS_ERROR("Failed to get safety status");
+        shutdown("Failed to get safety status after program state change");
+        return;
+    }
+
+    ROS_INFO_STREAM("Robot Mode: " << robot_mode << " | Safety Mode: " << safety_mode << " | Safety Status: " << safety_status);
+
+    if (program_running)
+    {
+        program_state_cv_.notify_all();
+        return;
+    }
+
+    // Try recover program stop
+    // TODO: Add recovery
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
@@ -880,14 +957,24 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "rpwc_ur_bridge_native");
     nh_ = new ros::NodeHandle();
     ros::AsyncSpinner spinner(2);
-    urcl::setLogLevel(urcl::LogLevel::INFO);
+
+    // DEBUG: Enable debug logs
+    if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
+    {
+        ros::console::notifyLoggerLevelsChanged();
+    }
+
+    // Print urcl logs using ros logs
+    ur_driver::registerUrclLogHandler();
+
+    // Initi variables
     last_controller_started_ = 0;
     freedrive_ = false;
     freedrive_params_ = {};
     speed_override_ = 1.0;
-
     name_space_ = nh_->getNamespace();
 
+    // Load params
     if (!nh_->getParam("robot_ip", robot_ip_))
     {
         ROS_FATAL_STREAM("Param '" << name_space_ << "/robot_ip' not found on param server");
@@ -953,6 +1040,7 @@ int main(int argc, char **argv)
 
     nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
 
+    // Use dashboard server to prepare robot controller
     ROS_INFO("Starting Dashboard");
     ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));
     if (!ur_dashboard_->connect(3, std::chrono::seconds(5)))
@@ -966,11 +1054,88 @@ int main(int argc, char **argv)
     timeout.tv_usec = 0;
     ur_dashboard_->setReceiveTimeout(timeout);
 
-    // ur_dashboard_->commandPowerOff();
-    ur_dashboard_->commandClearOperationalMode();
-    // ur_dashboard_->commandPowerOn();
+    // Start robot, if poossible keep current status
+    try
+    {
+        if (!ur_dashboard_->commandIsInRemoteControl())
+        {
+            ROS_ERROR("Robot controller must be in 'remote control' mode for this driver to work");
+            return 1;
+        }
+    }
+    catch (const urcl::UrException &e)
+    {
+        ROS_ERROR_STREAM("This driver does not support CB3 robots;\n"
+                         << e.what());
+        return 1;
+    }
+
+    try
+    {
+        if (check_safety_mode(urcl::SafetyMode::SYSTEM_EMERGENCY_STOP) || check_safety_mode(urcl::SafetyMode::ROBOT_EMERGENCY_STOP))
+        {
+            ROS_FATAL("Robot is in emergency stop");
+            return 1;
+        }
+
+        if (check_robot_mode(urcl::RobotMode::CONFIRM_SAFETY))
+        {
+            ROS_FATAL("Robot remote control not possible, acknowledge safety erros from teach pendant");
+            return 1;
+        }
+
+        motor_state_on_start_ = true;
+        if (check_robot_mode(urcl::RobotMode::POWER_OFF))
+        {
+            motor_state_on_start_ = false;
+            if (!ur_dashboard_->commandPowerOn())
+            {
+                ROS_FATAL("Failed to power up robot");
+                return 1;
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR_STREAM(e.what());
+        return 1;
+    }
+
+    std::string op_mode;
+    if (!ur_dashboard_->commandGetOperationalMode(op_mode))
+    {
+        ROS_ERROR("Failed to get operational mode");
+        return 1;
+    }
+
+    ROS_DEBUG_STREAM("Op mode: " << op_mode);
+    if (op_mode != "AUTOMATIC")
+    {
+        if (!ur_dashboard_->commandClearOperationalMode())
+        {
+            ROS_ERROR("Failed to clear operational mode");
+            return 1;
+        }
+    }
+
     ur_dashboard_->commandBrakeRelease();
 
+    // If safeguard is active try to wait for unlock or timeout
+    {
+        ros::Time start = ros::Time::now();
+        while (check_safety_mode(urcl::SafetyMode::SAFEGUARD_STOP))
+        {
+            if ((ros::Time::now() - start).sec >= 20)
+            {
+                ROS_FATAL("Safeguard Stop not released within timeout");
+                return 1;
+            }
+
+            ros::Duration(0.5).sleep();
+        }
+    }
+
+    // Start ur driver
     ROS_INFO("Create UR_Driver");
     urcl::UrDriverConfiguration urDriverConfig;
     urDriverConfig.robot_ip = robot_ip_;
@@ -982,7 +1147,6 @@ int main(int argc, char **argv)
 
     ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
     ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
-    ur_driver_->startRTDECommunication();
     ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
     std::thread rtde_thread{&thread_handle_rtde};
@@ -1087,6 +1251,16 @@ int main(int argc, char **argv)
     fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
     fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
+    {
+        std::unique_lock ps_lk{program_state_mutex_};
+        if (program_state_cv_.wait_for(ps_lk, std::chrono::seconds(3)) == std::cv_status::timeout)
+        {
+            ROS_FATAL("Robot failed to start program within the given timeout (3s)");
+            shutdown("Program start failed");
+            return 1;
+        }
+    }
+
     // Load Tool
     double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
     if (!nh_->getParam("x_pos_EE", x_pos_ee))
@@ -1168,7 +1342,7 @@ int main(int argc, char **argv)
     tcp_offs[4] = t_tool02EE.M.GetRot().y();
     tcp_offs[5] = t_tool02EE.M.GetRot().z();
 
-    if (!ur_driver_->setTcp(tcp_offs))
+    if (!ur_driver_->setTcpOffset(tcp_offs))
     {
         ROS_FATAL_STREAM("Failed to set tcp offset");
         shutdown("TCP set failed");
@@ -1263,8 +1437,8 @@ int main(int argc, char **argv)
     ros::ServiceServer get_digital_io_signal_srv = nh_->advertiseService<rpwc_msgs::getDigitalIOSignal::RequestType, rpwc_msgs::getDigitalIOSignal::ResponseType>("get_digital_io_signal", &callback_get_digital_io_signal);
     ros::ServiceServer set_speed_override_srv = nh_->advertiseService<rpwc_msgs::setSpeedOverride::RequestType, rpwc_msgs::setSpeedOverride::ResponseType>("set_speed_override", &callback_set_speed_override);
     ros::ServiceServer get_speed_override_srv = nh_->advertiseService<rpwc_msgs::getSpeedOverride::RequestType, rpwc_msgs::getSpeedOverride::ResponseType>("get_speed_override", &callback_get_speed_override);
-
     ros::ServiceServer set_payload_srv = nh_->advertiseService<rpwc_msgs::setPayload::RequestType, rpwc_msgs::setPayload::ResponseType>("rpwc_set_payload", &callback_set_payload);
+
     CartesianMove cart_act_srv("native_cartesian_commands");
     JointsMove joint_act_srv("native_joints_commands");
 

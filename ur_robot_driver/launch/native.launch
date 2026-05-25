@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="prefix" default="setup1/robot1/"/>
-  <arg name="robot_ip" default="192.168.56.100"/>
+  <arg name="robot_ip" default="192.168.1.100"/>
   <arg name="dt_pub_pose" default="0.01" doc="dt of threadPubRobPose"/>
   <arg name="rate_rtde_hz" default="50"/>
   <arg name="root_name" default="base"/>
@@ -15,10 +15,15 @@
   <arg name="roll_Last_Link" default="0"/>
   <arg name="pitch_Last_Link" default="0"/>
   <arg name="yaw_Last_Link" default="-1.570796327"/>
-  <arg name="controller_config_file" default="$(find ur_robot_driver)/config/ur10e_controllers.yaml"/>
-  <arg name="robot_description_file" default="$(find ur_description)/launch/load_ur10e.launch"/>
-  <arg name="kinematics_config" default="$(find ur_calibration)/param_calib/ur10e_calibration.yaml"/>
+  <arg name ="mass_EE" default="0.1" />
+  <arg name ="cog_x_EE" default="0.0" /> <!--m wrt rpwc_last_robot_link-->
+  <arg name ="cog_y_EE" default="0.0" /> <!--m wrt rpwc_last_robot_link-->
+  <arg name ="cog_z_EE" default="0.1" /> <!--m wrt rpwc_last_robot_link-->
+  <arg name="controller_config_file" default="$(find ur_robot_driver)/config/ur20_controllers.yaml"/>
+  <arg name="robot_description_file" default="$(find ur_description)/launch/load_ur20.launch"/>
+  <arg name="kinematics_config" default="$(find ur_calibration)/param_calib/ur20_calibration.yaml"/>
   <arg name="urscript_file" default="/usr/local/share/ur_client_library/resources/external_control.urscript"/>
+  <arg name="collision_config" default="$(find ur_description)/config/ur20/collision_parameters.yaml" doc="Path to the collision objects config file."/>
 
   <group ns="$(arg prefix)">
     <param name="robot_ip" value="$(arg robot_ip)"/>
@@ -36,12 +41,12 @@
     <param name="roll_Last_Link" value="$(arg roll_Last_Link)"/>
     <param name="pitch_Last_Link" value="$(arg pitch_Last_Link)"/>
     <param name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
-    <param name="mass" value="0.002" /> <!--kg-->
-    <rosparam param="cog">[0,0,0.001]</rosparam> <!--m-->
-    <param name="max_speed_linear" value="4.0"/> <!-- m/s -->
-    <param name="max_acceleration_linear" value="2.5"/> <!-- m/s^2 -->
-    <param name="max_speed_joint" value="2.0944"/> <!-- rad/s -->
-    <param name="max_acceleration_joint" value="13.9626"/> <!-- rad/s^2 -->
+    <param name="mass" value="$(arg mass_EE)" /> <!--kg-->
+    <rosparam param="cog" subst_value="true"> [$(arg cog_x_EE),$(arg cog_y_EE),$(arg cog_z_EE)]</rosparam>    <!--m wrt rpwc_last_robot_link-->
+    <param name="max_speed_linear" value="2.0"/> <!-- 4.0 m/s -->
+    <param name="max_acceleration_linear" value="1"/> <!-- 2.5 m/s^2 -->
+    <param name="max_speed_joint" value="1"/> <!-- 2.0944 rad/s -->
+    <param name="max_acceleration_joint" value="8"/> <!-- 13.9626 rad/s^2 -->
 
     <!-- Load joints names from controller config -->
     <rosparam subst_value="true" file="$(arg controller_config_file)" command="load"/>
@@ -61,6 +66,7 @@
       <arg name="yaw_Last_Link" value="$(arg yaw_Last_Link)"/>
     </include>
     <rosparam command="load" file="$(arg kinematics_config)"/>
+    <rosparam command="load" file="$(arg collision_config)"/>
 
     <!-- Convert joint states to /tf tranforms -->
     <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>

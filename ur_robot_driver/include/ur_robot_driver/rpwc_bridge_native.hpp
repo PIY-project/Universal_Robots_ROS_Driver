@@ -10,6 +10,7 @@
 #include <sstream>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <urdf/model.h>
 #include <kdl_parser/kdl_parser.hpp>
 #include <kdl/tree.hpp>
@@ -33,6 +34,7 @@
 #include <actionlib/server/simple_action_server.h>
 #include <actionlib/client/simple_action_client.h>
 #include <actionlib/client/terminal_state.h>
+#include <ros/console.h>
 
 // Packages includes
 #include <rpwc_msgs/setController.h>
@@ -46,13 +48,12 @@
 #include <rpwc_msgs/setPayload.h>
 #include <rpwc_msgs/getDigitalIOSignal.h>
 #include <rpwc_msgs/setDigitalIOSignal.h>
-// #include <rpwc_msgs/digitalIOSignal.h>
-// #include <rpwc_msgs/analogIOSignal.h>
 #include <rpwc_msgs/robotIOSignals.h>
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
 
 // UR Client Library includes
+#include <ur_robot_driver/urcl_log_handler.h>
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
 #include <ur_client_library/ur/dashboard_client.h>
@@ -74,6 +75,8 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 //                Functions
 // -----------------------------------------
 
+bool check_robot_mode(const urcl::RobotMode robot_mode);
+bool check_safety_mode(const urcl::SafetyMode safety_mode);
 void thread_keep_alive();
 void thread_handle_rtde();
 void thread_pub_joint_states();
@@ -151,15 +154,16 @@ KDL::Tree kdl_tree_;
 KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
 int num_of_joints_, last_controller_started_;
 KDL::JntArray q_msr_;
-bool freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
+bool motor_state_on_start_, freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
 Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
-std::mutex send_command_mutex_, joint_data_mutex_, io_signals_data_mutex_;
+std::mutex program_state_mutex_, send_command_mutex_, joint_data_mutex_, io_signals_data_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 urcl::vector6d_t rob_joints_, rob_joints_vel_;
 std::uint64_t rob_io_signals_;
 double speed_override_;
+std::condition_variable program_state_cv_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP
