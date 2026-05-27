@@ -420,7 +420,7 @@ void shutdown(std::string reason)
 
     if (ur_dashboard_)
     {
-        ur_dashboard_->commandPowerOff();
+       // ur_dashboard_->commandPowerOff();
         ur_dashboard_->commandClearOperationalMode();
         ur_dashboard_->disconnect();
     }
