@@ -37,6 +37,7 @@
 #include <ros/console.h>
 
 // Packages includes
+#include <rpwc_msgs/checkHardwareStatus.h>
 #include <rpwc_msgs/setController.h>
 #include <rpwc_msgs/getController.h>
 #include <rpwc_msgs/robotArmState.h>
@@ -74,7 +75,7 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
-
+void set_init_end_status(const bool success, const std::string &msg);
 bool check_robot_mode(const urcl::RobotMode robot_mode);
 bool check_safety_mode(const urcl::SafetyMode safety_mode);
 void thread_keep_alive();
@@ -93,6 +94,7 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 //           Services Callbacks
 // -----------------------------------------
 
+bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res);
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
 bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
@@ -144,6 +146,9 @@ private:
 // -----------------------------------------
 
 ros::NodeHandle *nh_;
+int8_t init_status_;
+bool init_success_;
+std::string init_msg_;
 std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
@@ -164,6 +169,6 @@ KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 urcl::vector6d_t rob_joints_, rob_joints_vel_;
 std::uint64_t rob_io_signals_;
 double speed_override_;
-std::condition_variable program_state_cv_;
+std::atomic<uint32_t> rtde_runtime_state_{0};
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

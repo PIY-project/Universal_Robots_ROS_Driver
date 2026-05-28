@@ -157,6 +157,19 @@ namespace
 //                Functions
 // -----------------------------------------
 
+void set_init_end_status(const bool success, const std::string &msg)
+{
+    init_status_ = 1;
+    init_success_ = success;
+    init_msg_ = msg;
+
+    if (success)
+        return;
+
+    ros::waitForShutdown();
+    shutdown(msg);
+}
+
 bool check_robot_mode(const urcl::RobotMode robot_mode)
 {
     if (!ur_dashboard_)
@@ -244,6 +257,13 @@ void thread_handle_rtde()
         {
             std::lock_guard lk{io_signals_data_mutex_};
             data_pkg->getData<std::uint64_t>("actual_digital_input_bits", rob_io_signals_);
+        }
+
+        // Runtime state
+        {
+            uint32_t rt_state;
+            data_pkg->getData<uint32_t>("runtime_state", rt_state);
+            rtde_runtime_state_.store(rt_state, std::memory_order_relaxed);
         }
 
         rate.sleep();
@@ -450,9 +470,6 @@ void shutdown(std::string reason)
     if (nh_ != nullptr)
         nh_->shutdown();
 
-    ur_driver::unregisterUrclLogHandler();
-    urcl::setLogLevel(urcl::LogLevel::INFO);
-
     if (ur_primary_)
     {
         ur_primary_->commandStop();
@@ -469,6 +486,9 @@ void shutdown(std::string reason)
 
     if (ur_driver_)
         ur_driver_->stopControl();
+
+    ur_driver::unregisterUrclLogHandler();
+    urcl::setLogLevel(urcl::LogLevel::INFO);
 }
 
 void handleRobotProgramState(bool program_running)
@@ -500,15 +520,6 @@ void handleRobotProgramState(bool program_running)
     }
 
     ROS_INFO_STREAM("Robot Mode: " << robot_mode << " | Safety Mode: " << safety_mode << " | Safety Status: " << safety_status);
-
-    if (program_running)
-    {
-        program_state_cv_.notify_all();
-        return;
-    }
-
-    // Try recover program stop
-    // TODO: Add recovery
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
@@ -567,6 +578,14 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 // -----------------------------------------
 //           Services Callbacks
 // -----------------------------------------
+
+bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res)
+{
+    res.status.data = init_status_;
+    res.result.data = init_success_;
+    res.info.data = init_msg_;
+    return true;
+}
 
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res)
 {
@@ -957,6 +976,7 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "rpwc_ur_bridge_native");
     nh_ = new ros::NodeHandle();
     ros::AsyncSpinner spinner(2);
+    spinner.start();
 
     // DEBUG: Enable debug logs
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
@@ -967,74 +987,80 @@ int main(int argc, char **argv)
     // Print urcl logs using ros logs
     ur_driver::registerUrclLogHandler();
 
-    // Initi variables
+    // Init variables
     last_controller_started_ = 0;
     freedrive_ = false;
     freedrive_params_ = {};
     speed_override_ = 1.0;
     name_space_ = nh_->getNamespace();
+    init_status_ = 0;
+    init_success_ = false;
+    init_msg_ = "";
+
+    // Start service for init feedback
+    ros::ServiceServer check_hardware_status_srv = nh_->advertiseService<rpwc_msgs::checkHardwareStatus::RequestType, rpwc_msgs::checkHardwareStatus::ResponseType>("check_hardware_status", &callback_check_hardware_status);
 
     // Load params
     if (!nh_->getParam("robot_ip", robot_ip_))
     {
         ROS_FATAL_STREAM("Param '" << name_space_ << "/robot_ip' not found on param server");
-        shutdown("Param robot_ip missing");
+        set_init_end_status(false, "Param robot_ip missing");
         return 1;
     }
 
     if (!nh_->getParam("root_name", root_name_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/root_name' not found on param server");
-        shutdown("Param root_name missing");
+        set_init_end_status(false, "Param root_name missing");
         return 1;
     }
 
     if (!nh_->getParam("tip_name", tip_name_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/tip_name' not found on param server");
-        shutdown("Param tip_name missing");
+        set_init_end_status(false, "Param tip_name missing");
         return 1;
     }
 
     if (!nh_->getParam("urscript_file", urscript_file_path_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/urscript_file' not found on param server");
-        shutdown("Param urscript_file missing");
+        set_init_end_status(false, "Param urscript_file missing");
         return 1;
     }
 
     if (!nh_->getParam("kinematics/hash", calibration_hash_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/kinematics/hash' not found on param server");
-        shutdown("Param kinematics/hash missing");
+        set_init_end_status(false, "Param kinematics/hash missing");
         return 1;
     }
 
     if (!nh_->getParam("max_speed_linear", max_speed_linear_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/max_speed_linear' not found on param server");
-        shutdown("Param max_speed_linear missing");
+        set_init_end_status(false, "Param max_speed_linear missing");
         return 1;
     }
 
     if (!nh_->getParam("max_acceleration_linear", max_acceleration_linear_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/max_acceleration_linear' not found on param server");
-        shutdown("Param max_acceleration_linear missing");
+        set_init_end_status(false, "Param max_acceleration_linear missing");
         return 1;
     }
 
     if (!nh_->getParam("max_speed_joint", max_speed_joint_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/max_speed_joint' not found on param server");
-        shutdown("Param max_speed_joint missing");
+        set_init_end_status(false, "Param max_speed_joint missing");
         return 1;
     }
 
     if (!nh_->getParam("max_acceleration_joint", max_acceleration_joint_))
     {
         ROS_ERROR_STREAM("Param '" << name_space_ << "/max_acceleration_joint' not found on param server");
-        shutdown("Param max_acceleration_joint missing");
+        set_init_end_status(false, "Param max_acceleration_joint missing");
         return 1;
     }
 
@@ -1046,6 +1072,7 @@ int main(int argc, char **argv)
     if (!ur_dashboard_->connect(3, std::chrono::seconds(5)))
     {
         URCL_LOG_ERROR("Could not connect to dashboard");
+        set_init_end_status(false, "Could not connect to dashboard");
         return 1;
     }
 
@@ -1054,12 +1081,13 @@ int main(int argc, char **argv)
     timeout.tv_usec = 0;
     ur_dashboard_->setReceiveTimeout(timeout);
 
-    // Start robot, if poossible keep current status
+    // Start robot, if possible keep current status
     try
     {
         if (!ur_dashboard_->commandIsInRemoteControl())
         {
             ROS_ERROR("Robot controller must be in 'remote control' mode for this driver to work");
+            set_init_end_status(false, "Robot controller must be in 'remote control' mode for this driver to work");
             return 1;
         }
     }
@@ -1067,6 +1095,7 @@ int main(int argc, char **argv)
     {
         ROS_ERROR_STREAM("This driver does not support CB3 robots;\n"
                          << e.what());
+        set_init_end_status(false, "CB3 robots are not supported");
         return 1;
     }
 
@@ -1075,12 +1104,14 @@ int main(int argc, char **argv)
         if (check_safety_mode(urcl::SafetyMode::SYSTEM_EMERGENCY_STOP) || check_safety_mode(urcl::SafetyMode::ROBOT_EMERGENCY_STOP))
         {
             ROS_FATAL("Robot is in emergency stop");
+            set_init_end_status(false, "Robot is in emergency stop");
             return 1;
         }
 
         if (check_robot_mode(urcl::RobotMode::CONFIRM_SAFETY))
         {
             ROS_FATAL("Robot remote control not possible, acknowledge safety erros from teach pendant");
+            set_init_end_status(false, "Robot remote control not possible, acknowledge safety erros from teach pendant");
             return 1;
         }
 
@@ -1091,6 +1122,7 @@ int main(int argc, char **argv)
             if (!ur_dashboard_->commandPowerOn())
             {
                 ROS_FATAL("Failed to power up robot");
+                set_init_end_status(false, "Failed to power up robot");
                 return 1;
             }
         }
@@ -1098,6 +1130,7 @@ int main(int argc, char **argv)
     catch (const std::exception &e)
     {
         ROS_ERROR_STREAM(e.what());
+        set_init_end_status(false, "Unexpected error, check logs");
         return 1;
     }
 
@@ -1105,6 +1138,7 @@ int main(int argc, char **argv)
     if (!ur_dashboard_->commandGetOperationalMode(op_mode))
     {
         ROS_ERROR("Failed to get operational mode");
+        set_init_end_status(false, "Failed to get operational mode");
         return 1;
     }
 
@@ -1114,6 +1148,7 @@ int main(int argc, char **argv)
         if (!ur_dashboard_->commandClearOperationalMode())
         {
             ROS_ERROR("Failed to clear operational mode");
+            set_init_end_status(false, "Failed to clear operational mode");
             return 1;
         }
     }
@@ -1128,6 +1163,7 @@ int main(int argc, char **argv)
             if ((ros::Time::now() - start).sec >= 20)
             {
                 ROS_FATAL("Safeguard Stop not released within timeout");
+                set_init_end_status(false, "Safeguard Stop not released within timeout");
                 return 1;
             }
 
@@ -1169,256 +1205,237 @@ int main(int argc, char **argv)
     ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
     ur_primary_ = ur_driver_->getPrimaryClient();
 
-    ROS_INFO("Load and parse URDF");
-
-    std::string xml_string;
-    if (nh_->hasParam("robot_description"))
-        nh_->getParam("robot_description", xml_string);
-    else
+    // Load URDF & init fk chains
     {
-        ROS_ERROR("Parameter robot_description not set, shutting down node...");
-        shutdown("Param robot_description missing");
-        return 1;
-    }
-
-    if (xml_string.size() == 0)
-    {
-        ROS_ERROR("Unable to load robot model from parameter robot_description");
-        shutdown("Param robot_description invalid");
-        return 1;
-    }
-
-    // Get urdf model out of robot_description
-    urdf::Model model;
-    if (!model.initString(xml_string))
-    {
-        ROS_ERROR("Failed to parse urdf file");
-        shutdown("Param  missing");
-        return 1;
-    }
-    ROS_INFO("Successfully parsed urdf file");
-
-    if (!kdl_parser::treeFromUrdfModel(model, kdl_tree_))
-    {
-        ROS_ERROR("Failed to construct kdl tree");
-        shutdown("Param  missing");
-        return 1;
-    }
-
-    // Populate the KDL chain to EE
-    if (!kdl_tree_.getChain(root_name_, tip_name_, kdl_chain_ee_))
-    {
-        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name_ << " --> " << tip_name_);
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-        ROS_ERROR_STREAM("  The segments are:");
-
-        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
-        KDL::SegmentMap::iterator it;
-
-        for (it = segment_map.begin(); it != segment_map.end(); it++)
-            ROS_ERROR_STREAM("    " << (*it).first);
-
-        shutdown("Error building kdl_chain_ee_");
-        return 1;
-    }
-
-    // Populate the KDL chain to LastLink
-    std::string ll_name = name_space_ + "/rpwc_last_robot_link";
-    ll_name.erase(ll_name.begin());
-    if (!kdl_tree_.getChain(root_name_, ll_name, kdl_chain_ll_))
-    {
-        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name);
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-        ROS_ERROR_STREAM("  The segments are:");
-
-        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
-        KDL::SegmentMap::iterator it;
-
-        for (it = segment_map.begin(); it != segment_map.end(); it++)
-            ROS_ERROR_STREAM("    " << (*it).first);
-
-        shutdown("Error building kdl_chain_ll_");
-        return 1;
-    }
-    ROS_INFO("KDL Chains ready");
-
-    num_of_joints_ = kdl_chain_ee_.getNrOfJoints();
-    q_msr_.resize(num_of_joints_);
-    fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
-    fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
-
-    {
-        std::unique_lock ps_lk{program_state_mutex_};
-        if (program_state_cv_.wait_for(ps_lk, std::chrono::seconds(3)) == std::cv_status::timeout)
+        ROS_INFO("Load and parse URDF");
+        std::string xml_string;
+        if (nh_->hasParam("robot_description"))
+            nh_->getParam("robot_description", xml_string);
+        else
         {
-            ROS_FATAL("Robot failed to start program within the given timeout (3s)");
-            shutdown("Program start failed");
+            ROS_ERROR("Parameter robot_description not set, shutting down node...");
+            set_init_end_status(false, "Param robot_description missing");
             return 1;
+        }
+
+        if (xml_string.size() == 0)
+        {
+            ROS_ERROR("Unable to load robot model from parameter robot_description");
+            set_init_end_status(false, "Param robot_description invalid");
+            return 1;
+        }
+
+        // Get urdf model out of robot_description
+        urdf::Model model;
+        if (!model.initString(xml_string))
+        {
+            ROS_ERROR("Failed to parse urdf file");
+            set_init_end_status(false, "Param  missing");
+            return 1;
+        }
+        ROS_INFO("Successfully parsed urdf file");
+
+        if (!kdl_parser::treeFromUrdfModel(model, kdl_tree_))
+        {
+            ROS_ERROR("Failed to construct kdl tree");
+            set_init_end_status(false, "Param  missing");
+            return 1;
+        }
+
+        // Populate the KDL chain to EE
+        if (!kdl_tree_.getChain(root_name_, tip_name_, kdl_chain_ee_))
+        {
+            ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+            ROS_ERROR_STREAM("  " << root_name_ << " --> " << tip_name_);
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+            ROS_ERROR_STREAM("  The segments are:");
+
+            KDL::SegmentMap segment_map = kdl_tree_.getSegments();
+            KDL::SegmentMap::iterator it;
+
+            for (it = segment_map.begin(); it != segment_map.end(); it++)
+                ROS_ERROR_STREAM("    " << (*it).first);
+
+            set_init_end_status(false, "Error building kdl_chain_ee_");
+            return 1;
+        }
+
+        // Populate the KDL chain to LastLink
+        std::string ll_name = name_space_ + "/rpwc_last_robot_link";
+        ll_name.erase(ll_name.begin());
+        if (!kdl_tree_.getChain(root_name_, ll_name, kdl_chain_ll_))
+        {
+            ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+            ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name);
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+            ROS_ERROR_STREAM("  The segments are:");
+
+            KDL::SegmentMap segment_map = kdl_tree_.getSegments();
+            KDL::SegmentMap::iterator it;
+
+            for (it = segment_map.begin(); it != segment_map.end(); it++)
+                ROS_ERROR_STREAM("    " << (*it).first);
+
+            set_init_end_status(false, "Error building kdl_chain_ll_");
+            return 1;
+        }
+        ROS_INFO("KDL Chains ready");
+
+        num_of_joints_ = kdl_chain_ee_.getNrOfJoints();
+        q_msr_.resize(num_of_joints_);
+        fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
+        fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
+    }
+
+    // Wait for program start
+    {
+        ros::Time start = ros::Time::now();
+        while (rtde_runtime_state_.load(std::memory_order_relaxed) != 2)
+        {
+            if ((ros::Time::now() - start).toSec() >= 3.0)
+            {
+                ROS_FATAL("Robot failed to start program within the given timeout (3s)");
+                set_init_end_status(false, "Program start failed");
+                return 1;
+            }
+            ros::Duration(0.05).sleep();
         }
     }
 
     // Load Tool
-    double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
-    if (!nh_->getParam("x_pos_EE", x_pos_ee))
     {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/x_pos_EE' not found on param server");
-        shutdown("Param x_pos_EE missing");
-        return 1;
-    }
+        double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
+        if (!nh_->getParam("x_pos_EE", x_pos_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/x_pos_EE' not found on param server");
+            set_init_end_status(false, "Param x_pos_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("y_pos_EE", y_pos_ee))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/y_pos_EE' not found on param server");
-        shutdown("Param y_pos_EE missing");
-        return 1;
-    }
+        if (!nh_->getParam("y_pos_EE", y_pos_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/y_pos_EE' not found on param server");
+            set_init_end_status(false, "Param y_pos_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("z_pos_EE", z_pos_ee))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/z_pos_EE' not found on param server");
-        shutdown("Param z_pos_EE missing");
-        return 1;
-    }
+        if (!nh_->getParam("z_pos_EE", z_pos_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/z_pos_EE' not found on param server");
+            set_init_end_status(false, "Param z_pos_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("roll_EE", roll_ee))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_EE' not found on param server");
-        shutdown("Param roll_EE missing");
-        return 1;
-    }
+        if (!nh_->getParam("roll_EE", roll_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_EE' not found on param server");
+            set_init_end_status(false, "Param roll_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("pitch_EE", pitch_ee))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_EE' not found on param server");
-        shutdown("Param pitch_EE missing");
-        return 1;
-    }
+        if (!nh_->getParam("pitch_EE", pitch_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_EE' not found on param server");
+            set_init_end_status(false, "Param pitch_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("yaw_EE", yaw_ee))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_EE' not found on param server");
-        shutdown("Param yaw_EE missing");
-        return 1;
-    }
+        if (!nh_->getParam("yaw_EE", yaw_ee))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_EE' not found on param server");
+            set_init_end_status(false, "Param yaw_EE missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("roll_Last_Link", roll_last_link))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_Last_Link' not found on param server");
-        shutdown("Param roll_Last_Link missing");
-        return 1;
-    }
+        if (!nh_->getParam("roll_Last_Link", roll_last_link))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/roll_Last_Link' not found on param server");
+            set_init_end_status(false, "Param roll_Last_Link missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("pitch_Last_Link", pitch_last_link))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_Last_Link' not found on param server");
-        shutdown("Param pitch_Last_Link missing");
-        return 1;
-    }
+        if (!nh_->getParam("pitch_Last_Link", pitch_last_link))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/pitch_Last_Link' not found on param server");
+            set_init_end_status(false, "Param pitch_Last_Link missing");
+            return 1;
+        }
 
-    if (!nh_->getParam("yaw_Last_Link", yaw_last_link))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_Last_Link' not found on param server");
-        shutdown("Param yaw_Last_Link missing");
-        return 1;
-    }
+        if (!nh_->getParam("yaw_Last_Link", yaw_last_link))
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/yaw_Last_Link' not found on param server");
+            set_init_end_status(false, "Param yaw_Last_Link missing");
+            return 1;
+        }
 
-    t_tool02LastLink = KDL::Frame::Identity();
-    t_tool02LastLink.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);
-    KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
-    t_LastLink2EE.p.data[0] = x_pos_ee;
-    t_LastLink2EE.p.data[1] = y_pos_ee;
-    t_LastLink2EE.p.data[2] = z_pos_ee;
-    t_LastLink2EE.M = KDL::Rotation::RPY(roll_ee, pitch_ee, yaw_ee);
-    KDL::Frame t_tool02EE = t_tool02LastLink * t_LastLink2EE;
-    urcl::vector6d_t tcp_offs;
-    tcp_offs[0] = t_tool02EE.p.x();
-    tcp_offs[1] = t_tool02EE.p.y();
-    tcp_offs[2] = t_tool02EE.p.z();
-    tcp_offs[3] = t_tool02EE.M.GetRot().x();
-    tcp_offs[4] = t_tool02EE.M.GetRot().y();
-    tcp_offs[5] = t_tool02EE.M.GetRot().z();
+        t_tool02LastLink = KDL::Frame::Identity();
+        t_tool02LastLink.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);
+        KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
+        t_LastLink2EE.p.data[0] = x_pos_ee;
+        t_LastLink2EE.p.data[1] = y_pos_ee;
+        t_LastLink2EE.p.data[2] = z_pos_ee;
+        t_LastLink2EE.M = KDL::Rotation::RPY(roll_ee, pitch_ee, yaw_ee);
+        KDL::Frame t_tool02EE = t_tool02LastLink * t_LastLink2EE;
+        urcl::vector6d_t tcp_offs;
+        tcp_offs[0] = t_tool02EE.p.x();
+        tcp_offs[1] = t_tool02EE.p.y();
+        tcp_offs[2] = t_tool02EE.p.z();
+        tcp_offs[3] = t_tool02EE.M.GetRot().x();
+        tcp_offs[4] = t_tool02EE.M.GetRot().y();
+        tcp_offs[5] = t_tool02EE.M.GetRot().z();
 
-    if (!ur_driver_->setTcpOffset(tcp_offs))
-    {
-        ROS_FATAL_STREAM("Failed to set tcp offset");
-        shutdown("TCP set failed");
-        return 2;
+        if (!ur_driver_->setTcpOffset(tcp_offs))
+        {
+            ROS_FATAL_STREAM("Failed to set tcp offset");
+            set_init_end_status(false, "TCP set failed");
+            return 2;
+        }
     }
 
     // Load Payload
-    double payload;
-    if (!nh_->getParam("mass", payload))
     {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/mass' not found on param server");
-        shutdown("Param mass missing");
-        return 1;
-    }
-
-    std::vector<double> cog;
-    if (!nh_->getParam("cog", cog))
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' not found on param server");
-        shutdown("Param cog missing");
-        return 1;
-    }
-    if (cog.size() != 3)
-    {
-        ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' must contain exactly 3 elements");
-        shutdown("Param cog invalid");
-        return 1;
-    }
-
-    urcl::vector3d_t cog_ur;
-    KDL::Vector p_last(cog[0], cog[1], cog[2]);
-    KDL::Vector p_tool0 = t_tool02LastLink * p_last;
-    cog_ur[0] = p_tool0.x();
-    cog_ur[1] = p_tool0.y();
-    cog_ur[2] = p_tool0.z();
-    if (!ur_driver_->setPayload(payload, cog_ur))
-    {
-        ROS_FATAL_STREAM("Failed to set payload");
-        shutdown("Payload set failed");
-        return 2;
-    }
-
-    // Load IO Signals
-    setDefaultDigitalSignalNames();
-    std::string io_signal_names_error;
-    if (!rebuildDigitalSignalLookup(io_signal_names_error))
-    {
-        ROS_FATAL_STREAM("Failed to initialize default digital IO signal names: " << io_signal_names_error);
-        shutdown("Default digital IO signal names invalid");
-        return 1;
-    }
-
-    std::string io_signal_names_json_path;
-    if (ros::param::get("io_signal_names_json", io_signal_names_json_path) && !io_signal_names_json_path.empty())
-    {
-        std::ifstream io_signal_names_file(io_signal_names_json_path);
-        if (!io_signal_names_file.is_open())
+        double payload;
+        if (!nh_->getParam("mass", payload))
         {
-            ROS_WARN_STREAM("Failed to open io signal names JSON '" << io_signal_names_json_path << "', using default digital IO signal names");
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/mass' not found on param server");
+            set_init_end_status(false, "Param mass missing");
+            return 1;
         }
-        else
+
+        std::vector<double> cog;
+        if (!nh_->getParam("cog", cog))
         {
-            io_signal_names_file.close();
-            if (!loadDigitalSignalNamesFromJson(io_signal_names_json_path, io_signal_names_error))
-            {
-                ROS_FATAL_STREAM("Failed to load io signal names JSON '" << io_signal_names_json_path << "': " << io_signal_names_error);
-                shutdown("Digital IO signal names JSON invalid");
-                return 1;
-            }
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' not found on param server");
+            set_init_end_status(false, "Param cog missing");
+            return 1;
+        }
+        if (cog.size() != 3)
+        {
+            ROS_FATAL_STREAM("Param '" << name_space_ << "/cog' must contain exactly 3 elements");
+            set_init_end_status(false, "Param cog invalid");
+            return 1;
+        }
+
+        urcl::vector3d_t cog_ur;
+        KDL::Vector p_last(cog[0], cog[1], cog[2]);
+        KDL::Vector p_tool0 = t_tool02LastLink * p_last;
+        cog_ur[0] = p_tool0.x();
+        cog_ur[1] = p_tool0.y();
+        cog_ur[2] = p_tool0.z();
+        if (!ur_driver_->setPayload(payload, cog_ur))
+        {
+            ROS_FATAL_STREAM("Failed to set payload");
+            set_init_end_status(false, "Payload set failed");
+            return 2;
         }
     }
 
     if (!ur_driver_->getRTDEWriter().sendSpeedSlider(speed_override_))
     {
         ROS_FATAL("Failed to set speed slider");
-        shutdown("speed slider set failed");
+        set_init_end_status(false, "speed slider set failed");
         return 2;
     }
 
@@ -1442,8 +1459,9 @@ int main(int argc, char **argv)
     CartesianMove cart_act_srv("native_cartesian_commands");
     JointsMove joint_act_srv("native_joints_commands");
 
-    spinner.start();
+    ROS_INFO("start");
     std::thread keep_alive(&thread_keep_alive);
+    set_init_end_status(true, "Node started");
     ros::waitForShutdown();
 
     ROS_INFO("Exiting");
