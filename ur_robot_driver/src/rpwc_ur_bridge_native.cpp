@@ -54,6 +54,12 @@ void thread_keep_alive()
     ros::Rate rate(freq_rtde_hz_);
     while (ros::ok())
     {
+        if (!robot_state_manager_ || !robot_state_manager_->isReady())
+        {
+            rate.sleep();
+            continue;
+        }
+
         if (send_command_mutex_.try_lock())
         {
             if (freedrive_)
@@ -107,9 +113,12 @@ void thread_handle_rtde()
 
         // Runtime state
         {
-            uint32_t rt_state;
+            uint32_t rt_state = 0;
+            int32_t robot_mode = 0, safety_mode = 0;
             data_pkg->getData<uint32_t>("runtime_state", rt_state);
-            rtde_runtime_state_.store(rt_state, std::memory_order_relaxed);
+            data_pkg->getData<int32_t>("robot_mode", robot_mode);
+            data_pkg->getData<int32_t>("safety_mode", safety_mode);
+            robot_state_manager_->updateRtdeState(rt_state, robot_mode, safety_mode);
         }
 
         rate.sleep();
@@ -293,37 +302,15 @@ void shutdown(std::string reason)
 
 void handleRobotProgramState(bool program_running)
 {
-    ROS_WARN_STREAM("ProgamState changed: " << (program_running ? "RUNNING" : "STOPPED"));
-
-    std::string robot_mode;
-    if (!ur_dashboard_->commandRobotMode(robot_mode))
-    {
-        ROS_ERROR("Failed to get robot mode");
-        shutdown("Failed to get robot mode after program state change");
-        return;
-    }
-
-    std::string safety_mode;
-    if (!ur_dashboard_->commandSafetyMode(safety_mode))
-    {
-        ROS_ERROR("Failed to get safety mode");
-        shutdown("Failed to get safety mode after program state change");
-        return;
-    }
-
-    std::string safety_status;
-    if (!ur_dashboard_->commandSafetyStatus(safety_status))
-    {
-        ROS_ERROR("Failed to get safety status");
-        shutdown("Failed to get safety status after program state change");
-        return;
-    }
-
-    ROS_INFO_STREAM("Robot Mode: " << robot_mode << " | Safety Mode: " << safety_mode << " | Safety Status: " << safety_status);
+    if (robot_state_manager_)
+        robot_state_manager_->onProgramStateChanged(program_running);
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
 {
+    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+        return false;
+
     std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
     return ur_instruction_executor_->executeMotion(waypoints);
 }
@@ -580,6 +567,7 @@ CartesianMove::~CartesianMove(void)
     if (as.isActive())
     {
         rpwc_result.success = false;
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "Node shutdown";
         as.setAborted(rpwc_result, rpwc_result.msg);
     }
@@ -590,6 +578,32 @@ void CartesianMove::goal_callback()
 {
     ROS_INFO("[Cartesian Move]: Accepting new goal");
     rpwc_goal = as.acceptNewGoal();
+
+    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    {
+        if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+        {
+            ROS_WARN("[Cartesian Move]: Safeguard stop active, waiting for clearance");
+            while (!robot_state_manager_->isReady() && !as.isPreemptRequested() && ros::ok())
+                ros::Duration(0.1).sleep();
+
+            if (as.isPreemptRequested())
+            {
+                as.setPreempted();
+                return;
+            }
+        }
+
+        if (!robot_state_manager_->isReady())
+        {
+            ROS_WARN("[Cartesian Move]: Robot program not ready, aborting goal");
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Robot program not ready";
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
+    }
 
     long unsigned int len = rpwc_goal->Poses.size();
     if (rpwc_goal->types.size() < len)
@@ -606,6 +620,7 @@ void CartesianMove::goal_callback()
     {
         ROS_WARN("[Cartesian Move]: No valid poses found, aborting");
         rpwc_result.success = false;
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "No data found";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
@@ -617,6 +632,7 @@ void CartesianMove::goal_callback()
         {
             ROS_ERROR_STREAM("[Cartesian Move]: Uknown move type: '" << type << "' aborting goal");
             rpwc_result.success = false;
+            rpwc_result.error_code = 9;
             rpwc_result.msg = "Uknown move type";
             as.setAborted(rpwc_result, rpwc_result.msg);
             return;
@@ -629,6 +645,7 @@ void CartesianMove::goal_callback()
     if (!rpwc_result.success)
     {
         ROS_INFO("[Cartesian Move]: Goal aborted");
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "Goal failed";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
@@ -661,6 +678,7 @@ JointsMove::~JointsMove(void)
     if (as.isActive())
     {
         rpwc_result.success = false;
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "Node shutdown";
         as.setAborted(rpwc_result, rpwc_result.msg);
     }
@@ -671,6 +689,32 @@ void JointsMove::goal_callback()
 {
     ROS_INFO("[Joints Move]: Accepting new goal");
     rpwc_goal = as.acceptNewGoal();
+
+    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    {
+        if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+        {
+            ROS_WARN("[Joints Move]: Safeguard stop active, waiting for clearance");
+            while (!robot_state_manager_->isReady() && !as.isPreemptRequested() && ros::ok())
+                ros::Duration(0.1).sleep();
+
+            if (as.isPreemptRequested())
+            {
+                as.setPreempted();
+                return;
+            }
+        }
+
+        if (!robot_state_manager_->isReady())
+        {
+            ROS_WARN("[Joints Move]: Robot program not ready, aborting goal");
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Robot program not ready";
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
+    }
 
     long unsigned int len = rpwc_goal->targets.size();
     if (rpwc_goal->velocities.size() < len)
@@ -685,6 +729,7 @@ void JointsMove::goal_callback()
     {
         ROS_WARN("[Joints Move]: No valid poses found, aborting");
         rpwc_result.success = false;
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "No data found";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
@@ -708,6 +753,7 @@ void JointsMove::goal_callback()
     if (!rpwc_result.success)
     {
         ROS_INFO("[Joints Move]: Goal aborted");
+        rpwc_result.error_code = 9;
         rpwc_result.msg = "Goal failed";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
@@ -824,6 +870,13 @@ int main(int argc, char **argv)
     }
 
     nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
+
+    bool auto_recover_protective_stop;
+    double recovery_timeout_s;
+    int recovery_retries;
+    nh_->param<bool>("auto_recover_protective_stop", auto_recover_protective_stop, false);
+    nh_->param<double>("recovery_timeout_s", recovery_timeout_s, 3.0);
+    nh_->param<int>("recovery_retries", recovery_retries, 3);
 
     // Use dashboard server to prepare robot controller
     ROS_INFO("Starting Dashboard");
@@ -949,7 +1002,15 @@ int main(int argc, char **argv)
     ros::param::get("io_signals_names_path", io_json_path);
     io_manager_.reset(new IOManager(*nh_, ur_driver_, io_json_path));
 
+    // Init Robot State Manager
+    robot_state_manager_.reset(new RobotStateManager(*nh_, ur_driver_, ur_dashboard_, auto_recover_protective_stop, recovery_timeout_s, recovery_retries));
+    robot_state_manager_->setOnBlockedCallback([]() {
+        if (ur_instruction_executor_)
+            ur_instruction_executor_->cancelMotion();
+    });
+
     std::thread rtde_thread{&thread_handle_rtde};
+    robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
     ROS_INFO_STREAM("checkCalibration: " << (calibValid ? "VALID" : "INVALID"));
@@ -1053,19 +1114,14 @@ int main(int argc, char **argv)
         fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
     }
 
-    // Wait for program start
+    // Wait for program start — state manager handles recovery and shutdown on failure
+    while (!robot_state_manager_->isReady() && ros::ok())
+        ros::Duration(0.05).sleep();
+
+    if (!ros::ok())
     {
-        ros::Time start = ros::Time::now();
-        while (rtde_runtime_state_.load(std::memory_order_relaxed) != 2)
-        {
-            if ((ros::Time::now() - start).toSec() >= 3.0)
-            {
-                ROS_FATAL("Robot failed to start program within the given timeout (3s)");
-                set_init_end_status(false, "Program start failed");
-                return 1;
-            }
-            ros::Duration(0.05).sleep();
-        }
+        set_init_end_status(false, "Program start failed");
+        return 1;
     }
 
     // Load Tool

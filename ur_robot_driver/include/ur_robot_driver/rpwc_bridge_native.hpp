@@ -51,6 +51,7 @@
 // UR Client Library includes
 #include <ur_robot_driver/urcl_log_handler.h>
 #include <ur_robot_driver/io_manager.hpp>
+#include <ur_robot_driver/robot_state_manager.hpp>
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
 #include <ur_client_library/ur/dashboard_client.h>
@@ -149,6 +150,7 @@ std::shared_ptr<urcl::UrDriver> ur_driver_;
 std::shared_ptr<urcl::primary_interface::PrimaryClient> ur_primary_;
 std::shared_ptr<urcl::InstructionExecutor> ur_instruction_executor_;
 std::unique_ptr<IOManager> io_manager_;
+std::unique_ptr<RobotStateManager> robot_state_manager_;
 KDL::Tree kdl_tree_;
 KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
 int num_of_joints_, last_controller_started_;
@@ -162,6 +164,5 @@ urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 urcl::vector6d_t rob_joints_, rob_joints_vel_;
 double speed_override_;
-std::atomic<uint32_t> rtde_runtime_state_{0};
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

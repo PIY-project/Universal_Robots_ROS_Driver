@@ -24,6 +24,9 @@
   <arg name="kinematics_config" default="$(find ur_calibration)/param_calib/ur20_calibration.yaml"/>
   <arg name="urscript_file" default="/usr/local/share/ur_client_library/resources/external_control.urscript"/>
   <arg name="collision_config" default="$(find ur_description)/config/ur20/collision_parameters.yaml" doc="Path to the collision objects config file."/>
+  <arg name="auto_recover_protective_stop" default="false" doc="Automatically unlock and recover from protective stops"/>
+  <arg name="recovery_timeout_s" default="3.0" doc="Seconds to wait for the robot program to start after each recovery attempt"/>
+  <arg name="recovery_retries" default="3" doc="Number of program send retries before shutting down"/>
 
   <group ns="$(arg prefix)">
     <param name="robot_ip" value="$(arg robot_ip)"/>
@@ -31,6 +34,9 @@
     <param name="root_name" value="$(arg prefix)$(arg root_name)"/>
     <param name="tip_name" value="$(arg prefix)$(arg tip_name)"/>
     <param name="rate_rtde_hz" value="$(arg rate_rtde_hz)"/>
+    <param name="auto_recover_protective_stop" value="$(arg auto_recover_protective_stop)"/>
+    <param name="recovery_timeout_s" value="$(arg recovery_timeout_s)"/>
+    <param name="recovery_retries" value="$(arg recovery_retries)"/>
     <param name="urscript_file" value="$(arg urscript_file)"/>
     <param name="x_pos_EE" value="$(arg x_pos_EE)"/>
     <param name="y_pos_EE" value="$(arg y_pos_EE)"/>
