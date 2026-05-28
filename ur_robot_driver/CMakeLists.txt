@@ -62,7 +62,7 @@ add_library(urcl_log_handler
 )
 target_link_libraries(urcl_log_handler ${catkin_LIBRARIES} ur_client_library::urcl)
 
-add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp)
+add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp src/io_manager.cpp)
 add_dependencies(rpwc_ur_bridge_native ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl urcl_log_handler)
 

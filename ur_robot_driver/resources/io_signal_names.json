@@ -1,8 +1,0 @@
-{
-  "digital_inputs": {
-    "standard": ["sensor_1", "sensor_2", "sensor_3", "sensor_4", "sensor_5", "sensor_6", "sensor_7", ""],
-    "configurable": ["", "", "", "", "", "", "", ""],
-    "tool": ["", ""]
-  },
-  "analog_signals": {}
-}

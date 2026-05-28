@@ -22,8 +22,6 @@
 #include <fstream>
 #include <string>
 #include <unordered_map>
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
 
 // Ros includes
 #include <ros/ros.h>
@@ -47,14 +45,12 @@
 #include <rpwc_msgs/setFreeJogParams.h>
 #include <rpwc_msgs/getFreeJogParams.h>
 #include <rpwc_msgs/setPayload.h>
-#include <rpwc_msgs/getDigitalIOSignal.h>
-#include <rpwc_msgs/setDigitalIOSignal.h>
-#include <rpwc_msgs/robotIOSignals.h>
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
 
 // UR Client Library includes
 #include <ur_robot_driver/urcl_log_handler.h>
+#include <ur_robot_driver/io_manager.hpp>
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
 #include <ur_client_library/ur/dashboard_client.h>
@@ -82,7 +78,6 @@ void thread_keep_alive();
 void thread_handle_rtde();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
-void thread_pub_io_signals_state();
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
 void shutdown(std::string reason);
 void handleRobotProgramState(bool program_running);
@@ -100,8 +95,6 @@ bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
 bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request &req, rpwc_msgs::setFreeJogParams::Response &res);
 bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request &req, rpwc_msgs::getFreeJogParams::Response &res);
-bool callback_set_digital_io_signal(rpwc_msgs::setDigitalIOSignal::Request &req, rpwc_msgs::setDigitalIOSignal::Response &res);
-bool callback_get_digital_io_signal(rpwc_msgs::getDigitalIOSignal::Request &req, rpwc_msgs::getDigitalIOSignal::Response &res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -155,6 +148,7 @@ std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;
 std::shared_ptr<urcl::primary_interface::PrimaryClient> ur_primary_;
 std::shared_ptr<urcl::InstructionExecutor> ur_instruction_executor_;
+std::unique_ptr<IOManager> io_manager_;
 KDL::Tree kdl_tree_;
 KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
 int num_of_joints_, last_controller_started_;
@@ -163,11 +157,10 @@ bool motor_state_on_start_, freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
 Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
-std::mutex program_state_mutex_, send_command_mutex_, joint_data_mutex_, io_signals_data_mutex_;
+std::mutex send_command_mutex_, joint_data_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
 urcl::vector6d_t rob_joints_, rob_joints_vel_;
-std::uint64_t rob_io_signals_;
 double speed_override_;
 std::atomic<uint32_t> rtde_runtime_state_{0};
 

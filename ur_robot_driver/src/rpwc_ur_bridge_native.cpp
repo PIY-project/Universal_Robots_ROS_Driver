@@ -1,158 +1,5 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
 
-namespace
-{
-    constexpr size_t kStandardDigitalSignalCount = 8;
-    constexpr size_t kConfigurableDigitalSignalCount = 8;
-    constexpr size_t kToolDigitalSignalCount = 2;
-    constexpr size_t kTotalDigitalSignalCount = kStandardDigitalSignalCount + kConfigurableDigitalSignalCount + kToolDigitalSignalCount;
-
-    std::array<std::string, kTotalDigitalSignalCount> digital_signal_names_{};
-    std::unordered_map<std::string, size_t> digital_signal_name_to_bit_{};
-
-    std::string getDefaultDigitalSignalName(const size_t bit)
-    {
-        if (bit < kStandardDigitalSignalCount)
-            return "standard_" + std::to_string(bit);
-
-        if (bit < kStandardDigitalSignalCount + kConfigurableDigitalSignalCount)
-            return "configurable_" + std::to_string(bit - kStandardDigitalSignalCount);
-
-        return "tool_" + std::to_string(bit - kStandardDigitalSignalCount - kConfigurableDigitalSignalCount);
-    }
-
-    void setDefaultDigitalSignalNames()
-    {
-        for (size_t bit = 0; bit < digital_signal_names_.size(); ++bit)
-            digital_signal_names_[bit] = getDefaultDigitalSignalName(bit);
-    }
-
-    bool rebuildDigitalSignalLookup(std::string &error_message)
-    {
-        digital_signal_name_to_bit_.clear();
-
-        for (size_t bit = 0; bit < digital_signal_names_.size(); ++bit)
-        {
-            const std::string &signal_name = digital_signal_names_[bit];
-
-            if (signal_name.empty())
-            {
-                error_message = "Resolved digital signal name is empty for bit " + std::to_string(bit);
-                return false;
-            }
-
-            if (!digital_signal_name_to_bit_.emplace(signal_name, bit).second)
-            {
-                error_message = "Duplicate digital signal name: " + signal_name;
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    bool loadDigitalSignalGroup(const boost::property_tree::ptree &digital_inputs, const std::string &group_name, const size_t expected_size, const size_t bit_offset, std::string &error_message)
-    {
-        const auto group_tree = digital_inputs.get_child_optional(group_name);
-        if (!group_tree)
-        {
-            error_message = "Missing digital_inputs." + group_name + " array in io signal names JSON";
-            return false;
-        }
-
-        size_t index = 0;
-        for (const auto &entry : *group_tree)
-        {
-            if (index >= expected_size)
-            {
-                error_message = "digital_inputs." + group_name + " must contain exactly " + std::to_string(expected_size) + " entries";
-                return false;
-            }
-
-            const std::string configured_name = entry.second.get_value<std::string>();
-            if (!configured_name.empty())
-                digital_signal_names_[bit_offset + index] = configured_name;
-
-            ++index;
-        }
-
-        if (index != expected_size)
-        {
-            error_message = "digital_inputs." + group_name + " must contain exactly " + std::to_string(expected_size) + " entries";
-            return false;
-        }
-
-        return true;
-    }
-
-    bool loadDigitalSignalNamesFromJson(const std::string &json_path, std::string &error_message)
-    {
-        std::ifstream json_file(json_path);
-        if (!json_file.is_open())
-            return false;
-
-        boost::property_tree::ptree root;
-        try
-        {
-            boost::property_tree::read_json(json_file, root);
-        }
-        catch (const boost::property_tree::json_parser::json_parser_error &err)
-        {
-            error_message = err.message() + " at line " + std::to_string(err.line());
-            return false;
-        }
-
-        const auto digital_inputs = root.get_child_optional("digital_inputs");
-        if (!digital_inputs)
-        {
-            error_message = "Missing digital_inputs object in io signal names JSON";
-            return false;
-        }
-
-        try
-        {
-            setDefaultDigitalSignalNames();
-
-            if (!loadDigitalSignalGroup(*digital_inputs, "standard", kStandardDigitalSignalCount, 0, error_message))
-                return false;
-
-            if (!loadDigitalSignalGroup(*digital_inputs, "configurable", kConfigurableDigitalSignalCount, kStandardDigitalSignalCount, error_message))
-                return false;
-
-            if (!loadDigitalSignalGroup(*digital_inputs, "tool", kToolDigitalSignalCount, kStandardDigitalSignalCount + kConfigurableDigitalSignalCount, error_message))
-                return false;
-        }
-        catch (const boost::property_tree::ptree_error &err)
-        {
-            error_message = err.what();
-            return false;
-        }
-
-        return rebuildDigitalSignalLookup(error_message);
-    }
-
-    bool resolveDigitalSignalBit(const std::string &signal_name, size_t &bit)
-    {
-        const auto it = digital_signal_name_to_bit_.find(signal_name);
-        if (it == digital_signal_name_to_bit_.end())
-            return false;
-
-        bit = it->second;
-        return true;
-    }
-
-    bool setResolvedDigitalOutput(const size_t bit, const bool value)
-    {
-        if (bit < kStandardDigitalSignalCount)
-            return ur_driver_->getRTDEWriter().sendStandardDigitalOutput(static_cast<uint8_t>(bit), value);
-
-        if (bit < kStandardDigitalSignalCount + kConfigurableDigitalSignalCount)
-            return ur_driver_->getRTDEWriter().sendConfigurableDigitalOutput(static_cast<uint8_t>(bit - kStandardDigitalSignalCount), value);
-
-        return ur_driver_->getRTDEWriter().sendToolDigitalOutput(static_cast<uint8_t>(bit - kStandardDigitalSignalCount - kConfigurableDigitalSignalCount), value);
-    }
-} // namespace
-
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
@@ -231,10 +78,6 @@ void thread_handle_rtde()
     rob_joints_vel_ = {};
     joint_data_mutex_.unlock();
 
-    io_signals_data_mutex_.lock();
-    rob_io_signals_ = 0x0;
-    io_signals_data_mutex_.unlock();
-
     ROS_INFO("[handle_rtde]: Start");
     ur_driver_->startRTDECommunication(false);
 
@@ -255,8 +98,11 @@ void thread_handle_rtde()
 
         // IO signals data
         {
-            std::lock_guard lk{io_signals_data_mutex_};
-            data_pkg->getData<std::uint64_t>("actual_digital_input_bits", rob_io_signals_);
+            std::uint64_t in_bits, out_bits;
+            data_pkg->getData<std::uint64_t>("actual_digital_input_bits", in_bits);
+            data_pkg->getData<std::uint64_t>("actual_digital_output_bits", out_bits);
+            io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
+            io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
         }
 
         // Runtime state
@@ -379,52 +225,6 @@ void thread_pub_rob_curr_pose()
     ROS_INFO("[robot_curr_pose]: Shutting down");
     pub.shutdown();
     server_robot_curr_pose.shutdown();
-}
-
-void thread_pub_io_signals_state()
-{
-    ROS_INFO("[io_signals_state]: Init");
-
-    ros::Rate rate{freq_rtde_hz_};
-
-    ros::Publisher pub = nh_->advertise<rpwc_msgs::robotIOSignals>("io_signals_state", 1, true);
-    std::uint64_t bits, old_bits = 0x0;
-    bool first_publish = true;
-    rpwc_msgs::robotIOSignals msg;
-    rpwc_msgs::robotIOSignals::_digitalSignals_type::value_type digital_tmp;
-
-    ROS_INFO("[io_signals_state]: Start");
-
-    while (ros::ok())
-    {
-        {
-            std::lock_guard lk{io_signals_data_mutex_};
-            bits = rob_io_signals_;
-        }
-
-        if (!first_publish && bits == old_bits)
-        {
-            rate.sleep();
-            continue;
-        }
-
-        first_publish = false;
-        old_bits = bits;
-
-        msg.digitalSignals.clear();
-        for (size_t i = 0; i < kTotalDigitalSignalCount; ++i)
-        {
-            digital_tmp.signalName.data = digital_signal_names_[i];
-            digital_tmp.value.data = static_cast<bool>((bits >> i) & 0x1);
-
-            msg.digitalSignals.push_back(digital_tmp);
-        }
-
-        pub.publish(msg);
-        rate.sleep();
-    }
-
-    ROS_INFO("[io_signals_state]: Shutting down");
 }
 
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old)
@@ -734,47 +534,6 @@ bool callback_set_payload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPay
     cog_ur[2] = p_tool0.z();
 
     res.result.data = ur_driver_->setPayload(payload, cog_ur);
-    return true;
-}
-
-bool callback_set_digital_io_signal(rpwc_msgs::setDigitalIOSignal::Request &req, rpwc_msgs::setDigitalIOSignal::Response &res)
-{
-    size_t bit = 0;
-    if (!resolveDigitalSignalBit(req.signal_name, bit))
-    {
-        res.success = false;
-        res.message = "Unknown digital IO signal name: " + req.signal_name;
-        return true;
-    }
-
-    std::lock_guard<std::mutex> lock(send_command_mutex_);
-    res.success = setResolvedDigitalOutput(bit, req.value);
-    if (!res.success)
-        res.message = "Failed to set digital IO signal: " + req.signal_name;
-
-    return true;
-}
-
-bool callback_get_digital_io_signal(rpwc_msgs::getDigitalIOSignal::Request &req, rpwc_msgs::getDigitalIOSignal::Response &res)
-{
-    size_t bit = 0;
-    if (!resolveDigitalSignalBit(req.signal_name, bit))
-    {
-        res.success = false;
-        res.message = "Unknown digital IO signal name: " + req.signal_name;
-        res.value = false;
-        return true;
-    }
-
-    std::uint64_t bits = 0x0;
-    {
-        std::lock_guard lk{io_signals_data_mutex_};
-        bits = rob_io_signals_;
-    }
-
-    res.value = static_cast<bool>((bits >> bit) & 0x1);
-    res.success = true;
-    res.message.clear();
     return true;
 }
 
@@ -1185,6 +944,11 @@ int main(int argc, char **argv)
     ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
     ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
+    // Init IO Manager
+    std::string io_json_path;
+    ros::param::get("io_signals_names_path", io_json_path);
+    io_manager_.reset(new IOManager(*nh_, ur_driver_, io_json_path));
+
     std::thread rtde_thread{&thread_handle_rtde};
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
@@ -1439,19 +1203,17 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // Start IO Manager pub and srvs
+    io_manager_->start(freq_rtde_hz_);
+
     // Advertise publishers and services
     std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
     ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
-
-    std::thread io_signals_state_pub(&thread_pub_io_signals_state);
-    ROS_INFO_STREAM("Started io_signals_state_pub publisher (ID: " << io_signals_state_pub.get_id() << ")");
 
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
     ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
     ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);
     ros::ServiceServer get_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::getFreeJogParams::RequestType, rpwc_msgs::getFreeJogParams::ResponseType>("get_free_jog_params", &callback_get_free_jog_params);
-    ros::ServiceServer set_digital_io_signal_srv = nh_->advertiseService<rpwc_msgs::setDigitalIOSignal::RequestType, rpwc_msgs::setDigitalIOSignal::ResponseType>("set_digital_io_signal", &callback_set_digital_io_signal);
-    ros::ServiceServer get_digital_io_signal_srv = nh_->advertiseService<rpwc_msgs::getDigitalIOSignal::RequestType, rpwc_msgs::getDigitalIOSignal::ResponseType>("get_digital_io_signal", &callback_get_digital_io_signal);
     ros::ServiceServer set_speed_override_srv = nh_->advertiseService<rpwc_msgs::setSpeedOverride::RequestType, rpwc_msgs::setSpeedOverride::ResponseType>("set_speed_override", &callback_set_speed_override);
     ros::ServiceServer get_speed_override_srv = nh_->advertiseService<rpwc_msgs::getSpeedOverride::RequestType, rpwc_msgs::getSpeedOverride::ResponseType>("get_speed_override", &callback_get_speed_override);
     ros::ServiceServer set_payload_srv = nh_->advertiseService<rpwc_msgs::setPayload::RequestType, rpwc_msgs::setPayload::ResponseType>("rpwc_set_payload", &callback_set_payload);
