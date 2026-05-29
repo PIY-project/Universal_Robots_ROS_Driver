@@ -44,7 +44,6 @@
 #include <rpwc_msgs/nativeJointsCommandsAction.h>
 #include <rpwc_msgs/setFreeJogParams.h>
 #include <rpwc_msgs/getFreeJogParams.h>
-#include <rpwc_msgs/setPayload.h>
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
 
@@ -78,9 +77,6 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode);
 
 void thread_handle_rtde();
 void thread_keep_alive();
-void thread_pub_joint_states();
-void thread_pub_rob_curr_pose();
-void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
 
 void handleRobotProgramState(bool program_running);
 void shutdown(std::string reason);
@@ -98,12 +94,8 @@ bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
 bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
 
-bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
-
 bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request &req, rpwc_msgs::setFreeJogParams::Response &res);
 bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request &req, rpwc_msgs::getFreeJogParams::Response &res);
-
-bool callback_set_payload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPayload::Response &res);
 
 bool callback_set_speed_override(rpwc_msgs::setSpeedOverride::Request &req, rpwc_msgs::setSpeedOverride::Response &res);
 bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc_msgs::getSpeedOverride::Response &res);
@@ -153,7 +145,7 @@ private:
 ros::NodeHandle *nh_;
 int8_t init_status_;
 bool init_success_;
-std::string init_msg_, name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
+std::string init_msg_, name_space_, robot_ip_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;
@@ -161,18 +153,11 @@ std::shared_ptr<urcl::primary_interface::PrimaryClient> ur_primary_;
 std::shared_ptr<urcl::InstructionExecutor> ur_instruction_executor_;
 std::unique_ptr<IOManager> io_manager_;
 std::unique_ptr<RobotStateManager> robot_state_manager_;
-KDL::Tree kdl_tree_;
-KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
-int num_of_joints_, last_controller_started_;
-KDL::JntArray q_msr_;
-bool motor_state_on_start_, freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
-Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
-geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
-std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
-std::mutex send_command_mutex_, joint_data_mutex_;
+std::unique_ptr<KinematicsManager> kinematics_manager_;
+int last_controller_started_;
+bool motor_state_on_start_, freedrive_;
+std::mutex send_command_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
-KDL::Frame t_tool02LastLink = KDL::Frame::Identity();
-urcl::vector6d_t rob_joints_, rob_joints_vel_;
 double speed_override_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP
