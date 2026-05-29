@@ -44,27 +44,26 @@ void RobotStateManager::onProgramStateChanged(bool running)
     ROS_INFO_STREAM("[StateManager]: Program state confirmation: " << (running ? "RUNNING" : "STOPPED") << " | robot_mode=" << robot_mode_str << " | safety_mode=" << safety_mode_str);
 }
 
-bool RobotStateManager::isSafeguardActive() const
+bool RobotStateManager::isSafeguardMode(int32_t safety_mode)
 {
-    int32_t safety_mode = rtde_safety_mode_.load(std::memory_order_relaxed);
-    return safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFEGUARD_STOP) ||
-           safety_mode == static_cast<int32_t>(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) ||
-           safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP);
+    return safety_mode == urcl::toUnderlying(urcl::SafetyMode::SAFEGUARD_STOP) ||
+           safety_mode == urcl::toUnderlying(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) ||
+           safety_mode == urcl::toUnderlying(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP);
 }
 
 bool RobotStateManager::isUnrecoverableSafetyMode(int32_t safety_mode)
 {
-    return safety_mode == static_cast<int32_t>(urcl::SafetyMode::SYSTEM_EMERGENCY_STOP) ||
-           safety_mode == static_cast<int32_t>(urcl::SafetyMode::ROBOT_EMERGENCY_STOP) ||
-           safety_mode == static_cast<int32_t>(urcl::SafetyMode::VIOLATION) ||
-           safety_mode == static_cast<int32_t>(urcl::SafetyMode::FAULT);
+    return safety_mode == urcl::toUnderlying(urcl::SafetyMode::SYSTEM_EMERGENCY_STOP) ||
+           safety_mode == urcl::toUnderlying(urcl::SafetyMode::ROBOT_EMERGENCY_STOP) ||
+           safety_mode == urcl::toUnderlying(urcl::SafetyMode::VIOLATION) ||
+           safety_mode == urcl::toUnderlying(urcl::SafetyMode::FAULT);
 }
 
 bool RobotStateManager::attemptRecovery()
 {
     int32_t safety_mode = rtde_safety_mode_.load(std::memory_order_relaxed);
 
-    if (safety_mode == static_cast<int32_t>(urcl::SafetyMode::PROTECTIVE_STOP))
+    if (safety_mode == urcl::toUnderlying(urcl::SafetyMode::PROTECTIVE_STOP))
     {
         if (!auto_recover_protective_stop_)
         {
@@ -79,17 +78,13 @@ bool RobotStateManager::attemptRecovery()
         }
     }
 
-    if (safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFEGUARD_STOP) ||
-        safety_mode == static_cast<int32_t>(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) ||
-        safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP))
+    if (isSafeguardMode(safety_mode))
     {
         ROS_WARN_STREAM("[StateManager]: Safeguard stop active (" << urcl::safetyModeString(static_cast<urcl::SafetyMode>(safety_mode)) << "), waiting for clearance");
         while (running_ && ros::ok())
         {
             int32_t current = rtde_safety_mode_.load(std::memory_order_relaxed);
-            if (current != static_cast<int32_t>(urcl::SafetyMode::SAFEGUARD_STOP) &&
-                current != static_cast<int32_t>(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) &&
-                current != static_cast<int32_t>(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP))
+            if (!isSafeguardMode(current))
                 break;
             ros::Duration(0.2).sleep();
         }
@@ -102,10 +97,7 @@ bool RobotStateManager::attemptRecovery()
 
         // Re-check safety mode — PLC may have asserted a new condition during the transition
         int32_t post_safeguard_safety = rtde_safety_mode_.load(std::memory_order_relaxed);
-        if (isUnrecoverableSafetyMode(post_safeguard_safety) ||
-            post_safeguard_safety == static_cast<int32_t>(urcl::SafetyMode::SAFEGUARD_STOP) ||
-            post_safeguard_safety == static_cast<int32_t>(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) ||
-            post_safeguard_safety == static_cast<int32_t>(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP))
+        if (isUnrecoverableSafetyMode(post_safeguard_safety) || isSafeguardMode(post_safeguard_safety))
         {
             ROS_WARN_STREAM("[StateManager]: Safety mode changed during safeguard recovery: "
                 << urcl::safetyModeString(static_cast<urcl::SafetyMode>(post_safeguard_safety))
@@ -117,7 +109,7 @@ bool RobotStateManager::attemptRecovery()
     // Verify motors are on before sending the program
     int32_t robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
 
-    if (robot_mode == static_cast<int32_t>(urcl::RobotMode::POWER_OFF))
+    if (robot_mode == urcl::toUnderlying(urcl::RobotMode::POWER_OFF))
     {
         ROS_WARN("[StateManager]: Robot is powered off, attempting to power on");
         if (!dashboard_->commandPowerOn())
@@ -129,13 +121,13 @@ bool RobotStateManager::attemptRecovery()
         while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
-            if (robot_mode == static_cast<int32_t>(urcl::RobotMode::IDLE))
+            if (robot_mode == urcl::toUnderlying(urcl::RobotMode::IDLE))
                 break;
             ros::Duration(0.2).sleep();
         }
     }
 
-    if (robot_mode == static_cast<int32_t>(urcl::RobotMode::IDLE))
+    if (robot_mode == urcl::toUnderlying(urcl::RobotMode::IDLE))
     {
         ROS_WARN("[StateManager]: Robot is idle, releasing brakes");
         if (!dashboard_->commandBrakeRelease())
@@ -147,17 +139,17 @@ bool RobotStateManager::attemptRecovery()
         while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
-            if (robot_mode == static_cast<int32_t>(urcl::RobotMode::RUNNING))
+            if (robot_mode == urcl::toUnderlying(urcl::RobotMode::RUNNING))
                 break;
             int32_t cur_safety = rtde_safety_mode_.load(std::memory_order_relaxed);
-            if (cur_safety != static_cast<int32_t>(urcl::SafetyMode::NORMAL) &&
-                cur_safety != static_cast<int32_t>(urcl::SafetyMode::REDUCED))
+            if (cur_safety != urcl::toUnderlying(urcl::SafetyMode::NORMAL) &&
+                cur_safety != urcl::toUnderlying(urcl::SafetyMode::REDUCED))
                 break;
             ros::Duration(0.2).sleep();
         }
     }
 
-    if (robot_mode != static_cast<int32_t>(urcl::RobotMode::RUNNING))
+    if (robot_mode != urcl::toUnderlying(urcl::RobotMode::RUNNING))
     {
         ROS_ERROR_STREAM("[StateManager]: Robot in unexpected mode: " << urcl::robotModeString(static_cast<urcl::RobotMode>(robot_mode)) << " — cannot restart program");
         return false;
@@ -217,9 +209,7 @@ void RobotStateManager::monitorThread()
             ROS_WARN("[StateManager]: Robot program stopped, bridge blocked");
             robot_program_ready_.store(false, std::memory_order_relaxed);
 
-            bool is_safeguard = safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFEGUARD_STOP) ||
-                                safety_mode == static_cast<int32_t>(urcl::SafetyMode::AUTOMATIC_MODE_SAFEGUARD_STOP) ||
-                                safety_mode == static_cast<int32_t>(urcl::SafetyMode::SAFETY_API_SAFEGUARD_STOP);
+            bool is_safeguard = isSafeguardMode(safety_mode);
             if (!is_safeguard && on_blocked_callback_)
                 on_blocked_callback_();
         }
@@ -234,8 +224,8 @@ void RobotStateManager::monitorThread()
         if (!attemptRecovery())
         {
             int32_t cur_safety = rtde_safety_mode_.load(std::memory_order_relaxed);
-            if (cur_safety != static_cast<int32_t>(urcl::SafetyMode::NORMAL) &&
-                cur_safety != static_cast<int32_t>(urcl::SafetyMode::REDUCED))
+            if (cur_safety != urcl::toUnderlying(urcl::SafetyMode::NORMAL) &&
+                cur_safety != urcl::toUnderlying(urcl::SafetyMode::REDUCED))
             {
                 rate.sleep();
                 continue;

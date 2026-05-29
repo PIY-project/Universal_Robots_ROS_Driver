@@ -1,8 +1,13 @@
-#pragma once
+#ifndef UR_ROBOT_STATE_MANAGER_HPP
+#define UR_ROBOT_STATE_MANAGER_HPP
+
 #include <atomic>
 #include <thread>
 #include <memory>
+
 #include <ros/ros.h>
+
+#include <ur_client_library/types.h>
 #include <ur_client_library/ur/ur_driver.h>
 #include <ur_client_library/ur/dashboard_client.h>
 #include <ur_client_library/ur/datatypes.h>
@@ -10,36 +15,75 @@
 class RobotStateManager
 {
 public:
-    /// @brief Constructs the state manager with driver references and recovery parameters.
+    /**
+     * @brief Constructs the state manager with driver references and recovery parameters.
+     *
+     * The object is ready to use immediately; call start() after the RTDE thread
+     * is running to begin monitoring.
+     *
+     * @param nh                           ROS node handle used for parameter reads.
+     * @param driver                       Shared UR driver instance; must outlive this object.
+     * @param dashboard                    Shared dashboard client; must outlive this object.
+     * @param auto_recover_protective_stop If true, automatically unlock and recover from protective stops.
+     * @param recovery_timeout_s           Seconds to wait for the program to start after each send attempt.
+     * @param recovery_retries             Number of program-send attempts before giving up and shutting down.
+     */
     RobotStateManager(ros::NodeHandle &nh, std::shared_ptr<urcl::UrDriver> driver, std::shared_ptr<urcl::DashboardClient> dashboard, bool auto_recover_protective_stop, double recovery_timeout_s, int recovery_retries);
 
+    /** @brief Calls stop(), joining the monitor thread. */
     ~RobotStateManager();
 
-    /// @brief Starts the monitor thread. Call after the RTDE thread is running.
+    /**
+     * @brief Starts the state monitor thread.
+     *
+     * Must be called after the RTDE thread is running so that data is
+     * available when the monitor first evaluates robot state.
+     */
     void start();
 
-    /// @brief Stops the monitor thread. Called on node shutdown.
+    /**
+     * @brief Stops the monitor thread, blocking until it has joined.
+     *
+     * Safe to call multiple times and from any thread.
+     */
     void stop();
 
-    /// @brief Returns true when the robot program is confirmed running and the bridge may send commands.
+    /** @brief Returns true when the robot program is running and the bridge may send commands. */
     bool isReady() const { return robot_program_ready_.load(std::memory_order_relaxed); }
 
-    /// @brief Returns true when the current safety mode is a safeguard stop variant.
-    bool isSafeguardActive() const;
+    /** @brief Returns true when the current safety mode is a safeguard stop variant. */
+    bool isSafeguardActive() const { return isSafeguardMode(rtde_safety_mode_.load(std::memory_order_relaxed)); }
 
-    /// @brief Called from thread_handle_rtde on every RTDE packet to update internal state.
+    /**
+     * @brief Updates internal RTDE state. Called from @c thread_handle_rtde on every data packet.
+     *
+     * Thread-safe; writes are @c memory_order_relaxed atomics.
+     *
+     * @param runtime_state  Value of the RTDE @c runtime_state field (2 = PLAYING).
+     * @param robot_mode     Value of the RTDE @c robot_mode field (cast of @c urcl::RobotMode).
+     * @param safety_mode    Value of the RTDE @c safety_mode field (cast of @c urcl::SafetyMode).
+     */
     void updateRtdeState(uint32_t runtime_state, int32_t robot_mode, int32_t safety_mode);
 
-    /// @brief Called from handleRobotProgramState for logging/confirmation only.
+    /** @brief Confirmation callback from @c handleRobotProgramState — logs robot and safety mode. */
     void onProgramStateChanged(bool running);
 
-    /// @brief Registers a callback invoked the moment the bridge becomes blocked. Use to cancel in-flight motion.
+    /**
+     * @brief Registers a callback invoked the moment the bridge becomes blocked.
+     *
+     * Not fired on safeguard stops since the robot halts naturally in that case.
+     * Typical use: call @c ur_instruction_executor_->cancelMotion() to unblock
+     * any in-flight @c executeMotion() and allow the active action goal to abort.
+     *
+     * @param callback  Callable with signature @c void().
+     */
     void setOnBlockedCallback(std::function<void()> callback);
 
 private:
     void monitorThread();
     bool attemptRecovery();
     static bool isUnrecoverableSafetyMode(int32_t safety_mode);
+    static bool isSafeguardMode(int32_t safety_mode);
 
     ros::NodeHandle &nh_;
     std::shared_ptr<urcl::UrDriver> driver_;
@@ -59,3 +103,5 @@ private:
     double recovery_timeout_s_;
     int recovery_retries_;
 };
+
+#endif // UR_ROBOT_STATE_MANAGER_HPP
