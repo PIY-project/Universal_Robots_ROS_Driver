@@ -588,7 +588,7 @@ int main(int argc, char **argv)
     ros::AsyncSpinner spinner(2);
     spinner.start();
 
-    // DEBUG: Enable debug logs
+    // Set default 
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
     {
         ros::console::notifyLoggerLevelsChanged();

@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <rpwc_msgs/robotIOSignals.h>
 
 // ---------------------------------------------------------------------------
 //  File-local helpers

@@ -1,5 +1,8 @@
 #include <ur_robot_driver/robot_state_manager.hpp>
 
+#include <ur_client_library/types.h>
+#include <ur_client_library/ur/datatypes.h>
+
 RobotStateManager::RobotStateManager(ros::NodeHandle &nh, std::shared_ptr<urcl::UrDriver> driver, std::shared_ptr<urcl::DashboardClient> dashboard, bool auto_recover_protective_stop, double recovery_timeout_s, int recovery_retries)
     : nh_(nh), driver_(std::move(driver)), dashboard_(std::move(dashboard)), auto_recover_protective_stop_(auto_recover_protective_stop), recovery_timeout_s_(recovery_timeout_s), recovery_retries_(recovery_retries)
 {

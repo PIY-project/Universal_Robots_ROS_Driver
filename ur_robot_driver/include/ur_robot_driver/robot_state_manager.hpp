@@ -1,16 +1,25 @@
 #ifndef UR_ROBOT_STATE_MANAGER_HPP
 #define UR_ROBOT_STATE_MANAGER_HPP
 
+// -----------------------------------------
+//                Includes
+// -----------------------------------------
+// System includes
 #include <atomic>
-#include <thread>
+#include <functional>
 #include <memory>
+#include <thread>
 
+// ROS includes
 #include <ros/ros.h>
 
-#include <ur_client_library/types.h>
+// UR Client Library includes
 #include <ur_client_library/ur/ur_driver.h>
 #include <ur_client_library/ur/dashboard_client.h>
-#include <ur_client_library/ur/datatypes.h>
+
+// -----------------------------------------
+//                  Class
+// -----------------------------------------
 
 class RobotStateManager
 {
@@ -80,10 +89,14 @@ public:
     void setOnBlockedCallback(std::function<void()> callback);
 
 private:
+    // --- Methods ---
+
     void monitorThread();
     bool attemptRecovery();
     static bool isUnrecoverableSafetyMode(int32_t safety_mode);
     static bool isSafeguardMode(int32_t safety_mode);
+
+    // --- Variables ---
 
     ros::NodeHandle &nh_;
     std::shared_ptr<urcl::UrDriver> driver_;

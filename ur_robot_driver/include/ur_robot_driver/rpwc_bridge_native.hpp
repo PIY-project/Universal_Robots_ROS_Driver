@@ -5,34 +5,19 @@
 //                Includes
 // -----------------------------------------
 // System includes
+#include <chrono>
 #include <iostream>
 #include <memory>
-#include <sstream>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
-#include <urdf/model.h>
-#include <kdl_parser/kdl_parser.hpp>
-#include <kdl/tree.hpp>
-#include <kdl/kdl.hpp>
-#include <kdl/chain.hpp>
-#include <kdl/chainfksolverpos_recursive.hpp>
-#include <eigen3/Eigen/Dense>
-#include <array>
-#include <fstream>
 #include <string>
-#include <unordered_map>
+#include <thread>
 
 // Ros includes
 #include <ros/ros.h>
 #include <ros/package.h>
-#include <geometry_msgs/Pose.h>
-#include <geometry_msgs/PoseStamped.h>
-#include <sensor_msgs/JointState.h>
-#include <actionlib/server/simple_action_server.h>
-#include <actionlib/client/simple_action_client.h>
-#include <actionlib/client/terminal_state.h>
 #include <ros/console.h>
+#include <actionlib/server/simple_action_server.h>
+#include <geometry_msgs/Pose.h>
 
 // Packages includes
 #include <rpwc_msgs/checkHardwareStatus.h>
@@ -47,10 +32,13 @@
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
 
-// UR Client Library includes
+// Local includes
 #include <ur_robot_driver/urcl_log_handler.h>
 #include <ur_robot_driver/io_manager.hpp>
 #include <ur_robot_driver/robot_state_manager.hpp>
+#include <ur_robot_driver/kinematics_manager.hpp>
+
+// UR Client Library includes
 #include <ur_client_library/log.h>
 #include <ur_client_library/types.h>
 #include <ur_client_library/ur/dashboard_client.h>

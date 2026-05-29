@@ -1,19 +1,29 @@
 #ifndef UR_IO_MANAGER_HPP
 #define UR_IO_MANAGER_HPP
 
+// -----------------------------------------
+//                Includes
+// -----------------------------------------
+// System includes
 #include <atomic>
 #include <array>
 #include <string>
 #include <thread>
 #include <unordered_map>
 
+// ROS includes
 #include <ros/ros.h>
 
-#include <rpwc_msgs/robotIOSignals.h>
+// Packages includes
 #include <rpwc_msgs/setDigitalIOSignal.h>
 #include <rpwc_msgs/getDigitalIOSignal.h>
 
+// UR Client Library includes
 #include <ur_client_library/ur/ur_driver.h>
+
+// -----------------------------------------
+//                  Class
+// -----------------------------------------
 
 class IOManager
 {
