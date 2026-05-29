@@ -8,9 +8,11 @@
 #include <unordered_map>
 
 #include <ros/ros.h>
+
 #include <rpwc_msgs/robotIOSignals.h>
 #include <rpwc_msgs/setDigitalIOSignal.h>
 #include <rpwc_msgs/getDigitalIOSignal.h>
+
 #include <ur_client_library/ur/ur_driver.h>
 
 class IOManager

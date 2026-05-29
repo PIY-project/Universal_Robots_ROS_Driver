@@ -49,30 +49,6 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode)
     return current_safety_mode == urcl::safetyModeString(safety_mode);
 }
 
-void thread_keep_alive()
-{
-    ros::Rate rate(freq_rtde_hz_);
-    while (ros::ok())
-    {
-        if (!robot_state_manager_ || !robot_state_manager_->isReady())
-        {
-            rate.sleep();
-            continue;
-        }
-
-        if (send_command_mutex_.try_lock())
-        {
-            if (freedrive_)
-                ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_NOOP);
-            else
-                ur_driver_->writeKeepalive();
-
-            send_command_mutex_.unlock();
-        }
-        rate.sleep();
-    }
-}
-
 void thread_handle_rtde()
 {
     ROS_INFO("[handle_rtde]: Init");
@@ -125,6 +101,30 @@ void thread_handle_rtde()
     }
 
     ROS_INFO("[handle_rtde]: Shutdown");
+}
+
+void thread_keep_alive()
+{
+    ros::Rate rate(freq_rtde_hz_);
+    while (ros::ok())
+    {
+        if (!robot_state_manager_ || !robot_state_manager_->isReady())
+        {
+            rate.sleep();
+            continue;
+        }
+
+        if (send_command_mutex_.try_lock())
+        {
+            if (freedrive_)
+                ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_NOOP);
+            else
+                ur_driver_->writeKeepalive();
+
+            send_command_mutex_.unlock();
+        }
+        rate.sleep();
+    }
 }
 
 void thread_pub_joint_states()
@@ -273,6 +273,12 @@ void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::Jnt
     quat_old = quat;
 }
 
+void handleRobotProgramState(bool program_running)
+{
+    if (robot_state_manager_)
+        robot_state_manager_->onProgramStateChanged(program_running);
+}
+
 void shutdown(std::string reason)
 {
     ROS_WARN_STREAM("Shutting down node, reason: " << reason);
@@ -298,12 +304,6 @@ void shutdown(std::string reason)
 
     ur_driver::unregisterUrclLogHandler();
     urcl::setLogLevel(urcl::LogLevel::INFO);
-}
-
-void handleRobotProgramState(bool program_running)
-{
-    if (robot_state_manager_)
-        robot_state_manager_->onProgramStateChanged(program_running);
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)

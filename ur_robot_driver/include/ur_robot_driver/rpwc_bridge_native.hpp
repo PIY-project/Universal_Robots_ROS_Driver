@@ -75,13 +75,16 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 void set_init_end_status(const bool success, const std::string &msg);
 bool check_robot_mode(const urcl::RobotMode robot_mode);
 bool check_safety_mode(const urcl::SafetyMode safety_mode);
-void thread_keep_alive();
+
 void thread_handle_rtde();
+void thread_keep_alive();
 void thread_pub_joint_states();
 void thread_pub_rob_curr_pose();
 void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
-void shutdown(std::string reason);
+
 void handleRobotProgramState(bool program_running);
+void shutdown(std::string reason);
+
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
 bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
 bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
@@ -91,11 +94,19 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 // -----------------------------------------
 
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res);
+
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
 bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
+
 bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
+
 bool callback_set_free_jog_params(rpwc_msgs::setFreeJogParams::Request &req, rpwc_msgs::setFreeJogParams::Response &res);
 bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request &req, rpwc_msgs::getFreeJogParams::Response &res);
+
+bool callback_set_payload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPayload::Response &res);
+
+bool callback_set_speed_override(rpwc_msgs::setSpeedOverride::Request &req, rpwc_msgs::setSpeedOverride::Response &res);
+bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc_msgs::getSpeedOverride::Response &res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -142,8 +153,7 @@ private:
 ros::NodeHandle *nh_;
 int8_t init_status_;
 bool init_success_;
-std::string init_msg_;
-std::string name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
+std::string init_msg_, name_space_, robot_ip_, root_name_, tip_name_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
 std::shared_ptr<urcl::UrDriver> ur_driver_;
