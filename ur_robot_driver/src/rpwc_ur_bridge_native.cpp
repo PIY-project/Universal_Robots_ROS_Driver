@@ -133,7 +133,10 @@ void shutdown(std::string reason)
 {
     ROS_WARN_STREAM("Shutting down node, reason: " << reason);
     if (nh_ != nullptr)
+    {
+        motor_off_on_shutdown_ = nh_->param("motor_off_for_deactivation", true);
         nh_->shutdown();
+    }
 
     if (ur_primary_)
     {
@@ -143,9 +146,9 @@ void shutdown(std::string reason)
 
     if (ur_dashboard_)
     {
-        if (!motor_state_on_start_)
-            ur_dashboard_->commandPowerOff();
         ur_dashboard_->commandClearOperationalMode();
+        if (motor_off_on_shutdown_)
+            ur_dashboard_->commandPowerOff();
         ur_dashboard_->disconnect();
     }
 
@@ -603,6 +606,7 @@ int main(int argc, char **argv)
     freedrive_params_ = {};
     speed_override_ = 1.0;
     name_space_ = nh_->getNamespace();
+    motor_off_on_shutdown_ = true;
     init_status_ = 0;
     init_success_ = false;
     init_msg_ = "";
@@ -718,10 +722,8 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        motor_state_on_start_ = true;
         if (check_robot_mode(urcl::RobotMode::POWER_OFF))
         {
-            motor_state_on_start_ = false;
             if (!ur_dashboard_->commandPowerOn())
             {
                 ROS_FATAL("Failed to power up robot");

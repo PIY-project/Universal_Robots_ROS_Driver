@@ -59,6 +59,7 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
+
 void set_init_end_status(const bool success, const std::string &msg);
 bool check_robot_mode(const urcl::RobotMode robot_mode);
 bool check_safety_mode(const urcl::SafetyMode safety_mode);
@@ -143,7 +144,7 @@ std::unique_ptr<IOManager> io_manager_;
 std::unique_ptr<RobotStateManager> robot_state_manager_;
 std::unique_ptr<KinematicsManager> kinematics_manager_;
 int last_controller_started_;
-bool motor_state_on_start_, freedrive_;
+bool motor_off_on_shutdown_, freedrive_;
 std::mutex send_command_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;

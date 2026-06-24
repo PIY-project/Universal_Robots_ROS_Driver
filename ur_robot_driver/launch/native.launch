@@ -27,6 +27,7 @@
   <arg name="auto_recover_protective_stop" default="false" doc="Automatically unlock and recover from protective stops"/>
   <arg name="recovery_timeout_s" default="3.0" doc="Seconds to wait for the robot program to start after each recovery attempt"/>
   <arg name="recovery_retries" default="3" doc="Number of program send retries before shutting down"/>
+  <arg name="motor_off_for_deactivation" default="true"/>
 
   <group ns="$(arg prefix)">
     <param name="robot_ip" value="$(arg robot_ip)"/>
@@ -53,6 +54,7 @@
     <param name="max_acceleration_linear" value="1"/> <!-- 2.5 m/s^2 -->
     <param name="max_speed_joint" value="1"/> <!-- 2.0944 rad/s -->
     <param name="max_acceleration_joint" value="8"/> <!-- 13.9626 rad/s^2 -->
+    <param name="motor_off_for_deactivation" value="$(arg motor_off_for_deactivation)"/>
 
     <!-- Load joints names from controller config -->
     <rosparam subst_value="true" file="$(arg controller_config_file)" command="load"/>
