@@ -377,6 +377,12 @@ bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, 
     cog_ur[1] = p_tool0.y();
     cog_ur[2] = p_tool0.z();
 
-    res.result.data = driver_->setPayload(payload, cog_ur);
+    bool ok = driver_->setPayload(payload, cog_ur);
+    if (ok)
+    {
+        payload_ = payload;
+        cog_ur_ = cog_ur;
+    }
+    res.result.data = ok;
     return true;
 }

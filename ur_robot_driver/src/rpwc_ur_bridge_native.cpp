@@ -835,6 +835,18 @@ int main(int argc, char **argv)
         if (ur_instruction_executor_)
             ur_instruction_executor_->cancelMotion();
     });
+    robot_state_manager_->setOnProgramRestartedCallback([]() {
+        if (!kinematics_manager_)
+            return;
+        try
+        {
+            kinematics_manager_->applyRobotConfig();
+        }
+        catch (const std::exception &e)
+        {
+            ROS_ERROR_STREAM("[ProgramRestarted]: Failed to reapply TCP/payload config: " << e.what());
+        }
+    });
 
     std::thread rtde_thread{&thread_handle_rtde};
     robot_state_manager_->start();

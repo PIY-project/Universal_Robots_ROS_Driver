@@ -101,6 +101,23 @@ public:
      */
     void setOnBlockedCallback(std::function<void()> callback);
 
+    /**
+     * @brief Registers a callback invoked after the robot program has been
+     *        re-uploaded and restarted by attemptRecovery().
+     *
+     * Re-sending the program resets the controller's TCP offset and payload to
+     * the URScript's baked-in defaults. Typical use: call
+     * KinematicsManager::applyRobotConfig() to reapply the runtime overrides.
+     * Not fired when the program never actually stopped (safeguard-clear fast
+     * path), since no config was lost in that case.
+     *
+     * The callback MUST NOT let exceptions escape — it runs on the monitor
+     * thread, which has no surrounding try/catch.
+     *
+     * @param callback Callable with signature void().
+     */
+    void setOnProgramRestartedCallback(std::function<void()> callback);
+
 private:
     // --- Methods ---
 
@@ -124,6 +141,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread monitor_thread_;
     std::function<void()> on_blocked_callback_;
+    std::function<void()> on_program_restarted_callback_;
 
     bool auto_recover_protective_stop_;
     double recovery_timeout_s_;

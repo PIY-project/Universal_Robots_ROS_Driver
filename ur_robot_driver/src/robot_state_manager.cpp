@@ -39,6 +39,11 @@ void RobotStateManager::setOnBlockedCallback(std::function<void()> callback)
     on_blocked_callback_ = std::move(callback);
 }
 
+void RobotStateManager::setOnProgramRestartedCallback(std::function<void()> callback)
+{
+    on_program_restarted_callback_ = std::move(callback);
+}
+
 bool RobotStateManager::forceProgramStop()
 {
     return dashboard_->commandStop();
@@ -176,7 +181,20 @@ bool RobotStateManager::attemptRecovery()
         while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2)
+            {
+                if (on_program_restarted_callback_)
+                {
+                    try
+                    {
+                        on_program_restarted_callback_();
+                    }
+                    catch (const std::exception &e)
+                    {
+                        ROS_ERROR_STREAM("[StateManager]: on_program_restarted_callback_ threw: " << e.what());
+                    }
+                }
                 return true;
+            }
             ros::Duration(0.05).sleep();
         }
 
