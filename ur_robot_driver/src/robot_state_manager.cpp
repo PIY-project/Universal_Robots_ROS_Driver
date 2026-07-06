@@ -39,6 +39,11 @@ void RobotStateManager::setOnBlockedCallback(std::function<void()> callback)
     on_blocked_callback_ = std::move(callback);
 }
 
+bool RobotStateManager::forceProgramStop()
+{
+    return dashboard_->commandStop();
+}
+
 void RobotStateManager::onProgramStateChanged(bool running)
 {
     std::string robot_mode_str, safety_mode_str;

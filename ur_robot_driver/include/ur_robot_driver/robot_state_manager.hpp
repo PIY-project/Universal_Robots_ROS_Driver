@@ -64,6 +64,19 @@ public:
     bool isSafeguardActive() const { return isSafeguardMode(rtde_safety_mode_.load(std::memory_order_relaxed)); }
 
     /**
+     * @brief Forces the currently running robot program to stop via the Dashboard Server,
+     * even during an active safeguard stop.
+     *
+     * Unlike @c cancelMotion(), which relies on the (possibly paused) script interpreter
+     * reading a reverse-socket message, this goes over the dashboard channel and is honored
+     * even while the interpreter is halted. The monitor thread's existing recovery logic
+     * will re-upload and restart the program once conditions allow.
+     *
+     * @return true if the Dashboard Server confirmed the program stopped.
+     */
+    bool forceProgramStop();
+
+    /**
      * @brief Updates internal RTDE state. Called from @c thread_handle_rtde on every data packet.
      *
      * Thread-safe; writes are @c memory_order_relaxed atomics.

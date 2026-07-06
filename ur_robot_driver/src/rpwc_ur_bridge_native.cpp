@@ -467,9 +467,26 @@ void CartesianMove::goal_callback()
 void CartesianMove::preempt_callback()
 {
     ROS_INFO("[Cartesian Move]: Goal preempted");
-    as.setPreempted();
-    ur_instruction_executor_->cancelMotion();
-    send_command_mutex_.unlock();
+
+    if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+    {
+        ROS_WARN("[Cartesian Move]: Safeguard active, forcing program stop to cancel motion");
+        if (robot_state_manager_->forceProgramStop())
+        {
+            as.setPreempted();
+        }
+        else
+        {
+            ROS_ERROR("[Cartesian Move]: Failed to force-stop robot program, falling back to cancelMotion");
+            ur_instruction_executor_->cancelMotion();
+            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+        }
+    }
+    else
+    {
+        ur_instruction_executor_->cancelMotion();
+        as.setPreempted();
+    }
 }
 
 // Joints Action Server
@@ -575,9 +592,26 @@ void JointsMove::goal_callback()
 void JointsMove::preempt_callback()
 {
     ROS_INFO("[Joints Move]: Goal preempted");
-    as.setPreempted();
-    ur_instruction_executor_->cancelMotion();
-    send_command_mutex_.unlock();
+
+    if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+    {
+        ROS_WARN("[Joints Move]: Safeguard active, forcing program stop to cancel motion");
+        if (robot_state_manager_->forceProgramStop())
+        {
+            as.setPreempted();
+        }
+        else
+        {
+            ROS_ERROR("[Joints Move]: Failed to force-stop robot program, falling back to cancelMotion");
+            ur_instruction_executor_->cancelMotion();
+            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+        }
+    }
+    else
+    {
+        ur_instruction_executor_->cancelMotion();
+        as.setPreempted();
+    }
 }
 
 // -----------------------------------------
@@ -588,7 +622,7 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "rpwc_ur_bridge_native");
     nh_ = new ros::NodeHandle();
-    ros::AsyncSpinner spinner(2);
+    ros::AsyncSpinner spinner(4);
     spinner.start();
 
     // Set default 
