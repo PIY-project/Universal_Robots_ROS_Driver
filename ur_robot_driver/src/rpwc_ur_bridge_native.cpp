@@ -207,7 +207,6 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
         }
         vel = max_speed_joint_ * velocities[i];
         acc = max_acceleration_joint_ * accelerations[i];
-        ROS_WARN_STREAM("vel: " << vel << " | acc: " << acc);
 
         targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
     }
