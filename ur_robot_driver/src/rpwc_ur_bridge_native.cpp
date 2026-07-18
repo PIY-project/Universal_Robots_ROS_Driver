@@ -9,6 +9,12 @@ void thread_keep_alive()
   ros::Rate rate(freq_rtde_hz_);
   while (ros::ok())
   {
+    if (motion_running_.load())
+    {
+      rate.sleep();
+      continue;
+    }
+
     if (send_command_mutex_.try_lock())
     {
       if (freedrive_)
@@ -191,8 +197,34 @@ void handleRobotProgramState(bool program_running)
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
 {
-  std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
   return ur_instruction_executor_->executeMotion(waypoints);
+}
+
+bool begin_motion()
+{
+  std::lock_guard<std::mutex> lock(motion_state_mutex_);
+  if (motion_running_.load())
+    return false;
+
+  motion_cancel_requested_.store(false);
+  motion_running_.store(true);
+  return true;
+}
+
+bool request_motion_cancel()
+{
+  std::lock_guard<std::mutex> lock(motion_state_mutex_);
+  motion_cancel_requested_.store(true);
+  return motion_running_.load();
+}
+
+bool finish_motion()
+{
+  std::lock_guard<std::mutex> lock(motion_state_mutex_);
+  motion_running_.store(false);
+  bool cancel_requested = motion_cancel_requested_.load();
+  motion_cancel_requested_.store(false);
+  return cancel_requested;
 }
 
 bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> velocities, std::vector<float> accelerations, std::vector<float> blending_radiuses)
@@ -361,8 +393,28 @@ void CartesianMove::goal_callback()
     }
   }
 
+  if (!begin_motion())
+  {
+    ROS_WARN("[Cartesian Move]: Another native motion is already running, aborting goal");
+    rpwc_result.success = false;
+    rpwc_result.msg = "Another native motion is already running";
+    as.setAborted(rpwc_result, rpwc_result.msg);
+    return;
+  }
+
   ROS_INFO("[Cartesian Move]: Executing trajectory");
   rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
+  bool cancel_requested = finish_motion();
+
+  if (cancel_requested || as.isPreemptRequested() || !as.isActive())
+  {
+    ROS_INFO("[Cartesian Move]: Goal preempted");
+    rpwc_result.success = false;
+    rpwc_result.msg = "Goal preempted";
+    if (as.isActive())
+      as.setPreempted(rpwc_result, rpwc_result.msg);
+    return;
+  }
 
   if (!rpwc_result.success)
   {
@@ -380,9 +432,17 @@ void CartesianMove::goal_callback()
 void CartesianMove::preempt_callback()
 {
   ROS_INFO("[Cartesian Move]: Goal preempted");
-  as.setPreempted();
-  ur_instruction_executor_->cancelMotion();
-  send_command_mutex_.unlock();
+  bool running = request_motion_cancel();
+  bool canceled = false;
+  if (running)
+    canceled = ur_instruction_executor_->cancelMotion();
+  ROS_WARN_STREAM("[Cartesian Move]: cancelMotion result: " << canceled);
+  if (as.isActive())
+  {
+    rpwc_result.success = false;
+    rpwc_result.msg = "Goal preempted";
+    as.setPreempted(rpwc_result, rpwc_result.msg);
+  }
 }
 
 // Joints Action Server
@@ -440,8 +500,28 @@ void JointsMove::goal_callback()
     waypoints.push_back(tmpWaypoint);
   }
 
+  if (!begin_motion())
+  {
+    ROS_WARN("[Joints Move]: Another native motion is already running, aborting goal");
+    rpwc_result.success = false;
+    rpwc_result.msg = "Another native motion is already running";
+    as.setAborted(rpwc_result, rpwc_result.msg);
+    return;
+  }
+
   ROS_INFO("[Joints Move]: Executing trajectory");
   rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
+  bool cancel_requested = finish_motion();
+
+  if (cancel_requested || as.isPreemptRequested() || !as.isActive())
+  {
+    ROS_INFO("[Joints Move]: Goal preempted");
+    rpwc_result.success = false;
+    rpwc_result.msg = "Goal preempted";
+    if (as.isActive())
+      as.setPreempted(rpwc_result, rpwc_result.msg);
+    return;
+  }
 
   if (!rpwc_result.success)
   {
@@ -459,9 +539,17 @@ void JointsMove::goal_callback()
 void JointsMove::preempt_callback()
 {
   ROS_INFO("[Joints Move]: Goal preempted");
-  as.setPreempted();
-  ur_instruction_executor_->cancelMotion();
-  send_command_mutex_.unlock();
+  bool running = request_motion_cancel();
+  bool canceled = false;
+  if (running)
+    canceled = ur_instruction_executor_->cancelMotion();
+  ROS_WARN_STREAM("[Joints Move]: cancelMotion result: " << canceled);
+  if (as.isActive())
+  {
+    rpwc_result.success = false;
+    rpwc_result.msg = "Goal preempted";
+    as.setPreempted(rpwc_result, rpwc_result.msg);
+  }
 }
 
 // -----------------------------------------
@@ -485,6 +573,8 @@ int main(int argc, char** argv)
   urcl::comm::INotifier notifier;
   last_controller_started_ = 0;
   freedrive_ = false;
+  motion_running_.store(false);
+  motion_cancel_requested_.store(false);
 
   name_space_ = nh_->getNamespace();
 

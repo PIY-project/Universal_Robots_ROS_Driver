@@ -10,6 +10,7 @@
 #include <sstream>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <urdf/model.h>
 #include <kdl_parser/kdl_parser.hpp>
 #include <kdl/tree.hpp>
@@ -133,6 +134,9 @@ KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
 int num_of_joints_, last_controller_started_;
 KDL::JntArray q_msr_;
 bool freedrive_, first_quat_ee_msr_, first_quat_ll_msr_;
+std::atomic_bool motion_running_;
+std::atomic_bool motion_cancel_requested_;
+std::mutex motion_state_mutex_;
 Eigen::Quaterniond quat_ee_old_msr_, quat_ll_old_msr_;
 geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
 std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
