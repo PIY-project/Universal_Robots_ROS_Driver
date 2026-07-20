@@ -204,7 +204,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<float> veloc
 
   for (long unsigned int i = 0; i < waypoints.size(); i++)
   {
-    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z,waypoints[i].orientation.w);
+    rot = KDL::Rotation::Quaternion(waypoints[i].orientation.x, waypoints[i].orientation.y, waypoints[i].orientation.z, waypoints[i].orientation.w);
     pose.x = waypoints[i].position.x;
     pose.y = waypoints[i].position.y;
     pose.z = waypoints[i].position.z;
@@ -307,6 +307,8 @@ bool callback_robot_curr_pose(rpwc_msgs::robotArmState::Request& req, rpwc_msgs:
 // Cartesian Action Server
 CartesianMove::CartesianMove(std::string name) : as(*nh_, name, false)
 {
+  executing.store(false);
+
   as.registerGoalCallback(boost::bind(&CartesianMove::goal_callback, this));
   as.registerPreemptCallback(boost::bind(&CartesianMove::preempt_callback, this));
 
@@ -361,33 +363,43 @@ void CartesianMove::goal_callback()
     }
   }
 
-  ROS_INFO("[Cartesian Move]: Executing trajectory");
-  rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
+  std::thread exec_thread = std::thread([this]() {
+    ROS_INFO("[Cartesian Move]: Executing trajectory");
+    executing.store(true);
+    rpwc_result.success =
+        move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
 
-  if (!rpwc_result.success)
-  {
-    ROS_INFO("[Cartesian Move]: Goal aborted");
-    rpwc_result.msg = "Goal failed";
-    as.setAborted(rpwc_result, rpwc_result.msg);
-    return;
-  }
+    executing.store(false);
+    if (!rpwc_result.success)
+    {
+      ROS_INFO("[Cartesian Move]: Goal aborted");
+      rpwc_result.msg = "Goal failed";
+      as.setAborted(rpwc_result, rpwc_result.msg);
+      return;
+    }
 
-  ROS_INFO("[Cartesian Move]: Goal completed");
-  rpwc_result.msg = "Goal succeded";
-  as.setSucceeded(rpwc_result, rpwc_result.msg);
+    ROS_INFO("[Cartesian Move]: Goal completed");
+    rpwc_result.msg = "Goal succeded";
+    as.setSucceeded(rpwc_result, rpwc_result.msg);
+  });
 }
 
 void CartesianMove::preempt_callback()
 {
   ROS_INFO("[Cartesian Move]: Goal preempted");
-  as.setPreempted();
   ur_instruction_executor_->cancelMotion();
-  send_command_mutex_.unlock();
+  while (executing.load() && ros::ok())
+  {
+    ros::Duration(0.2).sleep();
+  }
+  as.setPreempted();
 }
 
 // Joints Action Server
 JointsMove::JointsMove(std::string name) : as(*nh_, name, false)
 {
+  executing.store(false);
+
   as.registerGoalCallback(boost::bind(&JointsMove::goal_callback, this));
   as.registerPreemptCallback(boost::bind(&JointsMove::preempt_callback, this));
 
@@ -440,28 +452,35 @@ void JointsMove::goal_callback()
     waypoints.push_back(tmpWaypoint);
   }
 
-  ROS_INFO("[Joints Move]: Executing trajectory");
-  rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
+  std::thread exec_thread = std::thread([this, waypoints]() {
+    ROS_INFO("[Joints Move]: Executing trajectory");
+    executing.store(true);
+    rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
 
-  if (!rpwc_result.success)
-  {
-    ROS_INFO("[Joints Move]: Goal aborted");
-    rpwc_result.msg = "Goal failed";
-    as.setAborted(rpwc_result, rpwc_result.msg);
-    return;
-  }
+    executing.store(false);
+    if (!rpwc_result.success)
+    {
+      ROS_INFO("[Joints Move]: Goal aborted");
+      rpwc_result.msg = "Goal failed";
+      as.setAborted(rpwc_result, rpwc_result.msg);
+      return;
+    }
 
-  ROS_INFO("[Joints Move]: Goal completed");
-  rpwc_result.msg = "Goal succeded";
-  as.setSucceeded(rpwc_result, rpwc_result.msg);
+    ROS_INFO("[Joints Move]: Goal completed");
+    rpwc_result.msg = "Goal succeded";
+    as.setSucceeded(rpwc_result, rpwc_result.msg);
+  });
 }
 
 void JointsMove::preempt_callback()
 {
   ROS_INFO("[Joints Move]: Goal preempted");
-  as.setPreempted();
   ur_instruction_executor_->cancelMotion();
-  send_command_mutex_.unlock();
+  while (executing.load() && ros::ok())
+  {
+    ros::Duration(0.2).sleep();
+  }
+  as.setPreempted();
 }
 
 // -----------------------------------------
@@ -810,8 +829,12 @@ int main(int argc, char** argv)
   std::thread robot_curr_pose_pub(&thread_pub_rob_curr_pose);
   ROS_INFO_STREAM("Started rpwc_robot_curr_pose publisher (ID: " << robot_curr_pose_pub.get_id() << ")");
 
-  ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
-  ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
+  ros::ServiceServer set_controller_srv =
+      nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>(
+          "rpwc_controller", &callback_set_controller);
+  ros::ServiceServer srv_get_controller =
+      nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>(
+          "get_rpwc_controller", &callback_get_controller);
 
   CartesianMove cart_act_srv("native_cartesian_commands");
   JointsMove joint_act_srv("native_joints_commands");

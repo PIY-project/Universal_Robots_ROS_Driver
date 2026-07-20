@@ -98,6 +98,8 @@ private:
   rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
   rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
   rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
+
+  std::atomic<bool> executing;
 };
 
 class JointsMove
@@ -115,6 +117,8 @@ private:
   rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
   rpwc_msgs::nativeJointsCommandsResult rpwc_result;
   rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
+
+  std::atomic<bool> executing;
 };
 
 // -----------------------------------------
