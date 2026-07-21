@@ -80,9 +80,10 @@ bool RobotStateManager::attemptRecovery()
     {
         if (!auto_recover_protective_stop_)
         {
-            ROS_ERROR("[StateManager]: Protective stop active, auto-recovery disabled (set auto_recover_protective_stop:=true to enable)");
+            ROS_ERROR_THROTTLE(15.0, "[StateManager]: Protective stop active, auto-recovery disabled (set auto_recover_protective_stop:=true to enable)");
             return false;
         }
+
         ROS_WARN("[StateManager]: Protective stop active, attempting to unlock");
         if (!dashboard_->commandUnlockProtectiveStop())
         {
@@ -242,7 +243,7 @@ void RobotStateManager::monitorThread()
 
         if (isUnrecoverableSafetyMode(safety_mode))
         {
-            ROS_ERROR_STREAM_THROTTLE(5.0, "[StateManager]: Safety mode requires manual intervention: " << urcl::safetyModeString(static_cast<urcl::SafetyMode>(safety_mode)));
+            ROS_ERROR_STREAM_THROTTLE(15.0, "[StateManager]: Safety mode requires manual intervention: " << urcl::safetyModeString(static_cast<urcl::SafetyMode>(safety_mode)));
             ros::Duration(1.0).sleep();
             continue;
         }
