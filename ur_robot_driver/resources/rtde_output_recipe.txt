@@ -2,13 +2,8 @@ actual_digital_input_bits
 actual_digital_output_bits
 actual_q
 actual_qd
-analog_io_types
 robot_mode
 robot_status_bits
 runtime_state
 safety_mode
-safety_status_bits
-speed_scaling
-target_speed_fraction
-tcp_force_scalar
-timestamp
+ft_raw_wrench

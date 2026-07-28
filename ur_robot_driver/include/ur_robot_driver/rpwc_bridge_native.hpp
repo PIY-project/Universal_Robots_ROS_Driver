@@ -18,6 +18,7 @@
 #include <ros/console.h>
 #include <actionlib/server/simple_action_server.h>
 #include <geometry_msgs/Pose.h>
+#include <geometry_msgs/Wrench.h>
 
 // Packages includes
 #include <rpwc_msgs/checkHardwareStatus.h>
@@ -66,6 +67,7 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode);
 
 void thread_handle_rtde();
 void thread_keep_alive();
+void thread_pub_wrench();
 
 void handleRobotProgramState(bool program_running);
 void shutdown(std::string reason);
@@ -133,7 +135,7 @@ private:
 
 ros::NodeHandle *nh_;
 int8_t init_status_;
-bool init_success_;
+bool init_success_, enable_wrench_publisher_;
 std::string init_msg_, name_space_, robot_ip_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;
@@ -145,8 +147,9 @@ std::unique_ptr<RobotStateManager> robot_state_manager_;
 std::unique_ptr<KinematicsManager> kinematics_manager_;
 int last_controller_started_;
 bool motor_off_on_shutdown_, freedrive_;
-std::mutex send_command_mutex_;
+std::mutex send_command_mutex_, wrench_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;
+urcl::vector6d_t ft_raw_wrench_vec_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

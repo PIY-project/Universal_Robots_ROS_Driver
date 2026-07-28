@@ -93,6 +93,12 @@ void thread_handle_rtde()
             robot_state_manager_->updateRtdeState(rt_state, robot_mode, safety_mode);
         }
 
+        // Wrench
+        if (enable_wrench_publisher_ && wrench_mutex_.try_lock()) {
+            data_pkg->getData<urcl::vector6d_t>("ft_raw_wrench", ft_raw_wrench_vec_);
+            wrench_mutex_.unlock();
+        }
+
         rate.sleep();
     }
 
@@ -121,6 +127,39 @@ void thread_keep_alive()
         }
         rate.sleep();
     }
+}
+
+void thread_pub_wrench()
+{
+    ROS_INFO("[pub_wrench]: Init");
+    ros::Publisher pub = nh_->advertise<geometry_msgs::Wrench>("wrench", 10, false);
+    ros::Rate rate {freq_rtde_hz_};
+    geometry_msgs::Wrench msg;
+    urcl::vector6d_t local_wrench_vec;
+
+    ROS_INFO("[pub_wrench]: Start");
+    while (ros::ok())
+    {
+        {
+            std::lock_guard<std::mutex> lk {wrench_mutex_};
+            local_wrench_vec = ft_raw_wrench_vec_;
+        }
+
+        msg.force.x = local_wrench_vec[0];
+        msg.force.y = local_wrench_vec[1];
+        msg.force.z = local_wrench_vec[2];
+        msg.torque.x = local_wrench_vec[3];
+        msg.torque.y = local_wrench_vec[4];
+        msg.torque.z = local_wrench_vec[5];
+
+        pub.publish(msg);
+
+        rate.sleep();
+    }
+
+    pub.shutdown();
+    ROS_INFO("[pub_wrench]: End");
+    return;
 }
 
 void handleRobotProgramState(bool program_running)
@@ -706,6 +745,13 @@ int main(int argc, char **argv)
     nh_->param<double>("recovery_timeout_s", recovery_timeout_s, 3.0);
     nh_->param<int>("recovery_retries", recovery_retries, 3);
 
+    if (!nh_->getParam("enable_wrench_publisher", enable_wrench_publisher_))
+    {
+        ROS_ERROR_STREAM("Param '" << name_space_ << "/enable_wrench_publisher' not found on param server");
+        set_init_end_status(false, "Param enable_wrench_publisher missing");
+        return 1;
+    }
+
     // Use dashboard server to prepare robot controller
     ROS_INFO("Starting Dashboard");
     ur_dashboard_.reset(new urcl::DashboardClient(robot_ip_));
@@ -906,6 +952,9 @@ int main(int argc, char **argv)
 
     // Start IO Manager pub and srvs
     io_manager_->start(freq_rtde_hz_);
+
+    if (enable_wrench_publisher_)
+        std::thread wrench_pub_thread{&thread_pub_wrench};
 
     // Advertise services
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
