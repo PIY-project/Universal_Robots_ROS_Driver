@@ -151,5 +151,6 @@ std::mutex send_command_mutex_, wrench_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;
 urcl::vector6d_t ft_raw_wrench_vec_;
+std::vector<std::thread> thread_handles_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

@@ -196,6 +196,12 @@ void shutdown(std::string reason)
 
     ur_driver::unregisterUrclLogHandler();
     urcl::setLogLevel(urcl::LogLevel::INFO);
+
+    for (auto &thread : thread_handles_)
+    {
+        if (thread.joinable())
+            thread.join();
+    }
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
@@ -893,7 +899,7 @@ int main(int argc, char **argv)
         }
     });
 
-    std::thread rtde_thread{&thread_handle_rtde};
+    thread_handles_.push_back(std::thread(&thread_handle_rtde));
     robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
@@ -954,7 +960,7 @@ int main(int argc, char **argv)
     io_manager_->start(freq_rtde_hz_);
 
     if (enable_wrench_publisher_)
-        std::thread wrench_pub_thread{&thread_pub_wrench};
+        thread_handles_.push_back(std::thread(&thread_pub_wrench));
 
     // Advertise services
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
@@ -968,7 +974,7 @@ int main(int argc, char **argv)
     JointsMove joint_act_srv("native_joints_commands");
 
     ROS_INFO("start");
-    std::thread keep_alive(&thread_keep_alive);
+    thread_handles_.push_back(std::thread(&thread_keep_alive));
     set_init_end_status(true, "Node started");
     ros::waitForShutdown();
 
