@@ -6,4 +6,6 @@ robot_mode
 robot_status_bits
 runtime_state
 safety_mode
+speed_scaling
+target_speed_fraction
 ft_raw_wrench
