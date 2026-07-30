@@ -32,6 +32,7 @@
 #include <rpwc_msgs/getFreeJogParams.h>
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
+#include <rpwc_msgs/getWrench.h>
 
 // Local includes
 #include <ur_robot_driver/urcl_log_handler.h>
@@ -90,6 +91,8 @@ bool callback_get_free_jog_params(rpwc_msgs::getFreeJogParams::Request &req, rpw
 
 bool callback_set_speed_override(rpwc_msgs::setSpeedOverride::Request &req, rpwc_msgs::setSpeedOverride::Response &res);
 bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc_msgs::getSpeedOverride::Response &res);
+
+bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrench::Response &res);
 
 // -----------------------------------------
 //             Actions Servers
@@ -150,7 +153,8 @@ bool motor_off_on_shutdown_, freedrive_;
 std::mutex send_command_mutex_, wrench_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;
-urcl::vector6d_t ft_raw_wrench_vec_;
+urcl::vector6d_t actual_tcp_wrench_;
+geometry_msgs::Wrench last_wrench_;
 std::vector<std::thread> thread_handles_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

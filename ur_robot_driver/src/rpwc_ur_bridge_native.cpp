@@ -95,7 +95,7 @@ void thread_handle_rtde()
 
         // Wrench
         if (enable_wrench_publisher_ && wrench_mutex_.try_lock()) {
-            data_pkg->getData<urcl::vector6d_t>("ft_raw_wrench", ft_raw_wrench_vec_);
+            data_pkg->getData<urcl::vector6d_t>("actual_TCP_force", actual_tcp_wrench_);
             wrench_mutex_.unlock();
         }
 
@@ -142,7 +142,7 @@ void thread_pub_wrench()
     {
         {
             std::lock_guard<std::mutex> lk {wrench_mutex_};
-            local_wrench_vec = ft_raw_wrench_vec_;
+            local_wrench_vec = actual_tcp_wrench_;
         }
 
         msg.force.x = local_wrench_vec[0];
@@ -153,6 +153,8 @@ void thread_pub_wrench()
         msg.torque.z = local_wrench_vec[5];
 
         pub.publish(msg);
+
+        last_wrench_ = msg;
 
         rate.sleep();
     }
@@ -398,6 +400,62 @@ bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc
 {
     res.ratio.data = speed_override_;
     res.success.data = true;
+    return true;
+}
+
+bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrench::Response &res)
+{
+    if (!enable_wrench_publisher_)
+    {
+        res.info.data = "Wrench requested but publisher is not active";
+        res.result.data = false;
+        ROS_ERROR_STREAM(res.info.data);
+        return true;
+    }
+
+    std::vector<geometry_msgs::Wrench> last_n_wrenches;
+
+    last_n_wrenches.clear();
+    last_n_wrenches.reserve(freq_rtde_hz_);
+    ros::Rate rate {freq_rtde_hz_};
+
+    while (last_n_wrenches.size() <= freq_rtde_hz_ && ros::ok())
+    {
+        std::lock_guard<std::mutex> lk {wrench_mutex_};
+        last_n_wrenches.push_back(last_wrench_);
+        rate.sleep();
+    }
+
+    if (!ros::ok())
+    {
+        res.info.data = "Error";
+        res.result.data = false;
+        ROS_ERROR_STREAM(res.info.data);
+        return true;
+    }
+
+    geometry_msgs::Wrench wrench_sum;
+
+    for (const auto &reading : last_n_wrenches)
+    {
+        wrench_sum.force.x += reading.force.x;
+        wrench_sum.force.y += reading.force.y;
+        wrench_sum.force.z += reading.force.z;
+
+        wrench_sum.torque.x += reading.torque.x;
+        wrench_sum.torque.y += reading.torque.y;
+        wrench_sum.torque.z += reading.torque.z;
+    }
+
+    res.wrench.force.x = wrench_sum.force.x / double(last_n_wrenches.size());
+    res.wrench.force.y = wrench_sum.force.y / double(last_n_wrenches.size());
+    res.wrench.force.z = wrench_sum.force.z / double(last_n_wrenches.size());
+
+    res.wrench.torque.x = wrench_sum.torque.x / double(last_n_wrenches.size());
+    res.wrench.torque.y = wrench_sum.torque.y / double(last_n_wrenches.size());
+    res.wrench.torque.z = wrench_sum.torque.z / double(last_n_wrenches.size());
+
+    res.result.data = true;
     return true;
 }
 

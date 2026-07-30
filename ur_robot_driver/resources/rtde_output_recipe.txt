@@ -8,4 +8,4 @@ runtime_state
 safety_mode
 speed_scaling
 target_speed_fraction
-ft_raw_wrench
+actual_TCP_force
