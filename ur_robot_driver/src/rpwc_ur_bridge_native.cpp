@@ -419,7 +419,7 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
     last_n_wrenches.reserve(freq_rtde_hz_);
     ros::Rate rate {freq_rtde_hz_};
 
-    while (last_n_wrenches.size() <= freq_rtde_hz_ && ros::ok())
+    while (last_n_wrenches.size() <= (freq_rtde_hz_ * 2) && ros::ok())
     {
         std::lock_guard<std::mutex> lk {wrench_mutex_};
         last_n_wrenches.push_back(last_wrench_);
@@ -435,6 +435,14 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
     }
 
     geometry_msgs::Wrench wrench_sum;
+
+    wrench_sum.force.x = 0.0;
+    wrench_sum.force.y = 0.0;
+    wrench_sum.force.z = 0.0;
+
+    wrench_sum.torque.x = 0.0;
+    wrench_sum.torque.y = 0.0;
+    wrench_sum.torque.z = 0.0;
 
     for (const auto &reading : last_n_wrenches)
     {
@@ -1027,6 +1035,7 @@ int main(int argc, char **argv)
     ros::ServiceServer get_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::getFreeJogParams::RequestType, rpwc_msgs::getFreeJogParams::ResponseType>("get_free_jog_params", &callback_get_free_jog_params);
     ros::ServiceServer set_speed_override_srv = nh_->advertiseService<rpwc_msgs::setSpeedOverride::RequestType, rpwc_msgs::setSpeedOverride::ResponseType>("set_speed_override", &callback_set_speed_override);
     ros::ServiceServer get_speed_override_srv = nh_->advertiseService<rpwc_msgs::getSpeedOverride::RequestType, rpwc_msgs::getSpeedOverride::ResponseType>("get_speed_override", &callback_get_speed_override);
+    ros::ServiceServer get_wrench_srv = nh_->advertiseService<rpwc_msgs::getWrench::RequestType, rpwc_msgs::getWrench::ResponseType>("get_wrench", &callback_get_wrench);
 
     CartesianMove cart_act_srv("native_cartesian_commands");
     JointsMove joint_act_srv("native_joints_commands");
