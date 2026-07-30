@@ -19,6 +19,7 @@
 #include <actionlib/server/simple_action_server.h>
 #include <geometry_msgs/Pose.h>
 #include <geometry_msgs/Wrench.h>
+#include <std_srvs/Trigger.h>
 
 // Packages includes
 #include <rpwc_msgs/checkHardwareStatus.h>
@@ -93,6 +94,7 @@ bool callback_set_speed_override(rpwc_msgs::setSpeedOverride::Request &req, rpwc
 bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc_msgs::getSpeedOverride::Response &res);
 
 bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrench::Response &res);
+bool callback_zero_ft_sensor(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res);
 
 // -----------------------------------------
 //             Actions Servers

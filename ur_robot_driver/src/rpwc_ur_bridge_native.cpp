@@ -467,6 +467,12 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
     return true;
 }
 
+bool callback_zero_ft_sensor(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
+{
+    res.success = ur_driver_->zeroFTSensor();
+    return true;
+}
+
 // -----------------------------------------
 //             Actions Servers
 // -----------------------------------------
@@ -1036,6 +1042,7 @@ int main(int argc, char **argv)
     ros::ServiceServer set_speed_override_srv = nh_->advertiseService<rpwc_msgs::setSpeedOverride::RequestType, rpwc_msgs::setSpeedOverride::ResponseType>("set_speed_override", &callback_set_speed_override);
     ros::ServiceServer get_speed_override_srv = nh_->advertiseService<rpwc_msgs::getSpeedOverride::RequestType, rpwc_msgs::getSpeedOverride::ResponseType>("get_speed_override", &callback_get_speed_override);
     ros::ServiceServer get_wrench_srv = nh_->advertiseService<rpwc_msgs::getWrench::RequestType, rpwc_msgs::getWrench::ResponseType>("get_wrench", &callback_get_wrench);
+    ros::ServiceServer zero_ft_sensor_srv = nh_->advertiseService<std_srvs::Trigger::RequestType, std_srvs::Trigger::ResponseType>("zero_ft_sensor", &callback_zero_ft_sensor);
 
     CartesianMove cart_act_srv("native_cartesian_commands");
     JointsMove joint_act_srv("native_joints_commands");
