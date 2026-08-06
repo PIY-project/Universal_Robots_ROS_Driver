@@ -6,11 +6,14 @@
 // -----------------------------------------
 // System includes
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // Ros includes
 #include <ros/ros.h>
@@ -152,11 +155,15 @@ std::unique_ptr<RobotStateManager> robot_state_manager_;
 std::unique_ptr<KinematicsManager> kinematics_manager_;
 int last_controller_started_;
 bool motor_off_on_shutdown_, freedrive_;
-std::mutex send_command_mutex_, wrench_mutex_;
+std::mutex send_command_mutex_, wrench_buffer_mutex_;
+std::condition_variable wrench_sample_cv_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;
 urcl::vector6d_t actual_tcp_wrench_;
 geometry_msgs::Wrench last_wrench_;
+bool last_wrench_valid_, wrench_acquisition_active_;
+std::vector<geometry_msgs::Wrench> wrench_buffer_;
+std::size_t wrench_buffer_capacity_;
 std::vector<std::thread> thread_handles_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

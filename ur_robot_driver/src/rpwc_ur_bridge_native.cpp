@@ -1,5 +1,39 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
 
+namespace
+{
+std::size_t getWrenchSampleCount()
+{
+    std::size_t sample_count = 1;
+    if (freq_rtde_hz_ > 0.0)
+        sample_count = static_cast<std::size_t>(freq_rtde_hz_ * 2.0);
+    if (sample_count == 0)
+        sample_count = 1;
+    return sample_count;
+}
+
+std::chrono::milliseconds getWrenchAcquisitionTimeout(const std::size_t sample_count)
+{
+    double timeout_seconds = 3.0;
+    if (freq_rtde_hz_ > 0.0)
+        timeout_seconds = (static_cast<double>(sample_count) / freq_rtde_hz_) + 1.0;
+    return std::chrono::milliseconds(static_cast<int>(timeout_seconds * 1000.0));
+}
+
+void appendWrenchSample(const geometry_msgs::Wrench &msg)
+{
+    {
+        std::lock_guard<std::mutex> lk {wrench_buffer_mutex_};
+        last_wrench_ = msg;
+        last_wrench_valid_ = true;
+
+        if (wrench_acquisition_active_ && wrench_buffer_.size() < wrench_buffer_capacity_)
+            wrench_buffer_.push_back(msg);
+    }
+    wrench_sample_cv_.notify_all();
+}
+}
+
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
@@ -94,9 +128,18 @@ void thread_handle_rtde()
         }
 
         // Wrench
-        if (enable_wrench_publisher_ && wrench_mutex_.try_lock()) {
-            data_pkg->getData<urcl::vector6d_t>("actual_TCP_force", actual_tcp_wrench_);
-            wrench_mutex_.unlock();
+        if (enable_wrench_publisher_) {
+            urcl::vector6d_t local_wrench;
+            data_pkg->getData<urcl::vector6d_t>("actual_TCP_force", local_wrench);
+
+            geometry_msgs::Wrench msg;
+            msg.force.x = local_wrench[0];
+            msg.force.y = local_wrench[1];
+            msg.force.z = local_wrench[2];
+            msg.torque.x = local_wrench[3];
+            msg.torque.y = local_wrench[4];
+            msg.torque.z = local_wrench[5];
+            appendWrenchSample(msg);
         }
 
         rate.sleep();
@@ -135,26 +178,20 @@ void thread_pub_wrench()
     ros::Publisher pub = nh_->advertise<geometry_msgs::Wrench>("wrench", 10, false);
     ros::Rate rate {freq_rtde_hz_};
     geometry_msgs::Wrench msg;
-    urcl::vector6d_t local_wrench_vec;
 
     ROS_INFO("[pub_wrench]: Start");
     while (ros::ok())
     {
+        bool has_sample = false;
         {
-            std::lock_guard<std::mutex> lk {wrench_mutex_};
-            local_wrench_vec = actual_tcp_wrench_;
+            std::lock_guard<std::mutex> lk {wrench_buffer_mutex_};
+            has_sample = last_wrench_valid_;
+            if (has_sample)
+                msg = last_wrench_;
         }
 
-        msg.force.x = local_wrench_vec[0];
-        msg.force.y = local_wrench_vec[1];
-        msg.force.z = local_wrench_vec[2];
-        msg.torque.x = local_wrench_vec[3];
-        msg.torque.y = local_wrench_vec[4];
-        msg.torque.z = local_wrench_vec[5];
-
-        pub.publish(msg);
-
-        last_wrench_ = msg;
+        if (has_sample)
+            pub.publish(msg);
 
         rate.sleep();
     }
@@ -413,22 +450,66 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
         return true;
     }
 
-    std::vector<geometry_msgs::Wrench> last_n_wrenches;
-
-    last_n_wrenches.clear();
-    last_n_wrenches.reserve(freq_rtde_hz_);
-    ros::Rate rate {freq_rtde_hz_};
-
-    while (last_n_wrenches.size() <= (freq_rtde_hz_ * 2) && ros::ok())
+    const std::size_t target_sample_count = getWrenchSampleCount();
+    std::vector<geometry_msgs::Wrench> wrench_readings;
     {
-        std::lock_guard<std::mutex> lk {wrench_mutex_};
-        last_n_wrenches.push_back(last_wrench_);
-        rate.sleep();
+        std::unique_lock<std::mutex> lk {wrench_buffer_mutex_};
+        if (wrench_acquisition_active_)
+        {
+            res.info.data = "A wrench acquisition is already active";
+            res.result.data = false;
+            ROS_ERROR_STREAM(res.info.data);
+            return true;
+        }
+
+        wrench_buffer_.clear();
+        wrench_buffer_.reserve(target_sample_count);
+        wrench_buffer_capacity_ = target_sample_count;
+        wrench_acquisition_active_ = true;
+
+        const bool acquired = wrench_sample_cv_.wait_for(
+            lk,
+            getWrenchAcquisitionTimeout(target_sample_count),
+            [target_sample_count]()
+            { return wrench_buffer_.size() >= target_sample_count || !wrench_acquisition_active_ || !ros::ok(); });
+
+        if (!ros::ok())
+        {
+            wrench_acquisition_active_ = false;
+            wrench_buffer_.clear();
+            res.info.data = "Error";
+            res.result.data = false;
+            ROS_ERROR_STREAM(res.info.data);
+            return true;
+        }
+
+        if (!wrench_acquisition_active_ && wrench_buffer_.size() < target_sample_count)
+        {
+            wrench_buffer_.clear();
+            res.info.data = "Wrench acquisition was cancelled";
+            res.result.data = false;
+            ROS_ERROR_STREAM(res.info.data);
+            return true;
+        }
+
+        if (!acquired)
+        {
+            wrench_acquisition_active_ = false;
+            wrench_buffer_.clear();
+            res.info.data = "Timed out while acquiring wrench samples";
+            res.result.data = false;
+            ROS_ERROR_STREAM(res.info.data);
+            return true;
+        }
+
+        wrench_readings = wrench_buffer_;
+        wrench_buffer_.clear();
+        wrench_acquisition_active_ = false;
     }
 
-    if (!ros::ok())
+    if (wrench_readings.empty())
     {
-        res.info.data = "Error";
+        res.info.data = "No wrench samples available yet";
         res.result.data = false;
         ROS_ERROR_STREAM(res.info.data);
         return true;
@@ -444,7 +525,7 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
     wrench_sum.torque.y = 0.0;
     wrench_sum.torque.z = 0.0;
 
-    for (const auto &reading : last_n_wrenches)
+    for (const auto &reading : wrench_readings)
     {
         wrench_sum.force.x += reading.force.x;
         wrench_sum.force.y += reading.force.y;
@@ -455,13 +536,13 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
         wrench_sum.torque.z += reading.torque.z;
     }
 
-    res.wrench.force.x = wrench_sum.force.x / double(last_n_wrenches.size());
-    res.wrench.force.y = wrench_sum.force.y / double(last_n_wrenches.size());
-    res.wrench.force.z = wrench_sum.force.z / double(last_n_wrenches.size());
+    res.wrench.force.x = wrench_sum.force.x / double(wrench_readings.size());
+    res.wrench.force.y = wrench_sum.force.y / double(wrench_readings.size());
+    res.wrench.force.z = wrench_sum.force.z / double(wrench_readings.size());
 
-    res.wrench.torque.x = wrench_sum.torque.x / double(last_n_wrenches.size());
-    res.wrench.torque.y = wrench_sum.torque.y / double(last_n_wrenches.size());
-    res.wrench.torque.z = wrench_sum.torque.z / double(last_n_wrenches.size());
+    res.wrench.torque.x = wrench_sum.torque.x / double(wrench_readings.size());
+    res.wrench.torque.y = wrench_sum.torque.y / double(wrench_readings.size());
+    res.wrench.torque.z = wrench_sum.torque.z / double(wrench_readings.size());
 
     res.result.data = true;
     return true;
@@ -470,6 +551,14 @@ bool callback_get_wrench(rpwc_msgs::getWrench::Request &req, rpwc_msgs::getWrenc
 bool callback_zero_ft_sensor(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
 {
     res.success = ur_driver_->zeroFTSensor();
+    if (res.success)
+    {
+        std::lock_guard<std::mutex> lk {wrench_buffer_mutex_};
+        wrench_buffer_.clear();
+        last_wrench_valid_ = false;
+        wrench_acquisition_active_ = false;
+    }
+    wrench_sample_cv_.notify_all();
     return true;
 }
 
