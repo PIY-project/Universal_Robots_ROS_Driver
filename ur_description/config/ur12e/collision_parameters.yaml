@@ -1,0 +1,7 @@
+never_collide:
+    - ["base_link_inertia", "upper_arm_link"]
+    - ["base_link_inertia", "wrist_1_link"]
+    - ["forearm_link", "wrist_2_link"]
+    - ["wrist_1_link", "wrist_3_link"]
+
+ignored_robot_links: ["wrist_3_link"]
