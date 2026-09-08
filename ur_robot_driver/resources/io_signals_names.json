@@ -6,7 +6,7 @@
     "tool":         ["", ""]
   },
   "outputs": {
-    "standard":     ["", "", "", "", "", "", "", ""],
+    "standard":     ["ext_rotary_axis", "ext_gripper", "", "", "", "", "", ""],
     "configurable": ["", "", "", "", "", "", "", ""],
     "safety":       [false, false, false, false, false, false, false, false],
     "tool":         ["", ""]

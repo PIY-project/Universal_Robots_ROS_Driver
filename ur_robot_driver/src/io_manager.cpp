@@ -14,9 +14,7 @@ namespace
     // Reads a JSON array of strings of exactly `expected` size into name_arr starting at bit_offset.
     // Non-empty entries override the current value; empty entries keep the existing default.
     template <size_t N>
-    bool applyNameGroup(const nlohmann::json &parent, const std::string &key,
-                        size_t expected, size_t bit_offset,
-                        std::array<std::string, N> &name_arr)
+    bool applyNameGroup(const nlohmann::json &parent, const std::string &key, size_t expected, size_t bit_offset, std::array<std::string, N> &name_arr)
     {
         if (!parent.contains(key))
             return true; // group absent — keep defaults
@@ -24,8 +22,7 @@ namespace
         const auto &arr = parent[key];
         if (!arr.is_array() || arr.size() != expected)
         {
-            ROS_WARN_STREAM("[IOManager]: '" << key << "' must have exactly "
-                                             << expected << " entries — skipping group");
+            ROS_WARN_STREAM("[IOManager]: '" << key << "' must have exactly " << expected << " entries — skipping group");
             return false;
         }
 
@@ -44,9 +41,7 @@ namespace
 //  Constructor / destructor
 // ---------------------------------------------------------------------------
 
-IOManager::IOManager(ros::NodeHandle &nh,
-                     std::shared_ptr<urcl::UrDriver> driver,
-                     const std::string &json_path)
+IOManager::IOManager(ros::NodeHandle &nh, std::shared_ptr<urcl::UrDriver> driver, const std::string &json_path)
     : nh_(nh), driver_(std::move(driver))
 {
     if (json_path.empty() || !loadFromJson(json_path))
@@ -96,8 +91,7 @@ void IOManager::stop()
 //  Service callbacks
 // ---------------------------------------------------------------------------
 
-bool IOManager::callbackSetDigital(rpwc_msgs::setDigitalIOSignal::Request &req,
-                                   rpwc_msgs::setDigitalIOSignal::Response &res)
+bool IOManager::callbackSetDigital(rpwc_msgs::setDigitalIOSignal::Request &req, rpwc_msgs::setDigitalIOSignal::Response &res)
 {
     const auto it = digital_lookup_.find(req.signal_name);
     if (it == digital_lookup_.end())
