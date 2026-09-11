@@ -6,7 +6,7 @@
     "tool":         ["", ""]
   },
   "outputs": {
-    "standard":     ["", "", "", "", "", "", "", ""],
+    "standard":     ["DO_0", "", "", "", "", "", "", ""],
     "configurable": ["", "", "", "", "", "", "", ""],
     "safety":       [false, false, false, false, false, false, false, false],
     "tool":         ["", ""]
