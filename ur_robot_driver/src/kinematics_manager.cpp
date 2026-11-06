@@ -1,6 +1,9 @@
 #include <ur_robot_driver/kinematics_manager.hpp>
 
 // System includes
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <urdf/model.h>
 #include <kdl_parser/kdl_parser.hpp>
 
@@ -119,6 +122,16 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     tcp_offs_[3] = t_tool02EE.M.GetRot().x();
     tcp_offs_[4] = t_tool02EE.M.GetRot().y();
     tcp_offs_[5] = t_tool02EE.M.GetRot().z();
+    for (double value : tcp_offs_)
+    {
+        // URCL serializes SET_TCP_OFFSET as rounded signed int32 units of
+        // 1e-6. Validate before that cast can overflow or receive NaN.
+        const double scaled = value * 1000000.0;
+        if (!std::isfinite(scaled) ||
+            std::round(scaled) < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
+            std::round(scaled) > static_cast<double>(std::numeric_limits<std::int32_t>::max()))
+            throw std::runtime_error("Computed TCP cannot be serialized as URCL SET_TCP_OFFSET");
+    }
 
     if (!nh_.getParam("mass", payload_))
         throw std::runtime_error("Param mass missing");
@@ -142,13 +155,14 @@ KinematicsManager::~KinematicsManager()
 
 void KinematicsManager::applyRobotConfig()
 {
+    std::lock_guard<std::mutex> lock(config_command_mutex_);
+    config_applied_.store(false);
     if (!driver_->setTcpOffset(tcp_offs_))
         throw std::runtime_error("TCP set failed");
 
     if (!driver_->setPayload(payload_, cog_ur_))
         throw std::runtime_error("Payload set failed");
 
-    config_applied_ = true;
 }
 
 void KinematicsManager::start(double rate_hz)
@@ -161,10 +175,9 @@ void KinematicsManager::start(double rate_hz)
     robot_curr_pose_srv_ = nh_.advertiseService("rpwc_robot_curr_pose", &KinematicsManager::callbackRobotCurrPose, this);
     set_payload_srv_ = nh_.advertiseService("rpwc_set_payload", &KinematicsManager::callbackSetPayload, this);
 
+    running_ = true;
     joint_states_thread_ = std::thread(&KinematicsManager::jointStatePublisherThread, this);
     pose_thread_ = std::thread(&KinematicsManager::posePublisherThread, this);
-
-    running_ = true;
 }
 
 void KinematicsManager::stop()
@@ -377,6 +390,7 @@ bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, 
     cog_ur[1] = p_tool0.y();
     cog_ur[2] = p_tool0.z();
 
+    std::lock_guard<std::mutex> lock(config_command_mutex_);
     bool ok = driver_->setPayload(payload, cog_ur);
     if (ok)
     {

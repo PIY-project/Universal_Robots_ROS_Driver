@@ -57,7 +57,7 @@ public:
      */
     void stop();
 
-    /** @brief Returns true when the robot program is running and the bridge may send commands. */
+    /** @brief Returns true when the robot program is running; TCP readiness is checked separately. */
     bool isReady() const { return robot_program_ready_.load(std::memory_order_relaxed); }
 
     /** @brief Returns true when the current safety mode is a safeguard stop variant. */

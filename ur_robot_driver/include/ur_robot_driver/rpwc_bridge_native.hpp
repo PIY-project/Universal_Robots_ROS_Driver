@@ -6,6 +6,7 @@
 // -----------------------------------------
 // System includes
 #include <chrono>
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,8 @@
 #include <ur_robot_driver/io_manager.hpp>
 #include <ur_robot_driver/robot_state_manager.hpp>
 #include <ur_robot_driver/kinematics_manager.hpp>
+#include <ur_robot_driver/tcp_verifier.hpp>
+#include <ur_robot_driver/bridge_trace_recorder.hpp>
 
 // UR Client Library includes
 #include <ur_client_library/log.h>
@@ -66,6 +69,8 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode);
 
 void thread_handle_rtde();
 void thread_keep_alive();
+void thread_configure_robot();
+bool motion_ready();
 
 void handleRobotProgramState(bool program_running);
 void shutdown(std::string reason);
@@ -105,9 +110,6 @@ private:
     void preempt_callback();
 
     CartesianAS as;
-    rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
-    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
-    rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
 };
 
 class JointsMove
@@ -122,9 +124,6 @@ private:
     void preempt_callback();
 
     JointsAS as;
-    rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
-    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
-    rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
 };
 
 // -----------------------------------------
@@ -143,6 +142,20 @@ std::shared_ptr<urcl::InstructionExecutor> ur_instruction_executor_;
 std::unique_ptr<IOManager> io_manager_;
 std::unique_ptr<RobotStateManager> robot_state_manager_;
 std::unique_ptr<KinematicsManager> kinematics_manager_;
+std::unique_ptr<TcpVerifier> tcp_verifier_;
+std::unique_ptr<BridgeTraceRecorder> bridge_trace_recorder_;
+std::atomic<bool> config_worker_running_{false};
+std::atomic<bool> bridge_threads_running_{false};
+std::atomic<bool> cancel_required_{false};
+std::atomic<bool> active_motion_goal_{false};
+std::atomic<bool> ur_program_connected_{false};
+std::mutex program_callback_mutex_;
+bool program_callback_enabled_ = true;
+double tcp_verification_timeout_s_;
+std::thread config_thread_;
+std::thread rtde_thread_;
+std::thread keep_alive_thread_;
+std::unique_ptr<ros::AsyncSpinner> spinner_;
 int last_controller_started_;
 bool motor_off_on_shutdown_, freedrive_;
 std::mutex send_command_mutex_;

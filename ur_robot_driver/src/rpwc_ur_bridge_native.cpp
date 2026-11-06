@@ -1,5 +1,174 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iterator>
+#include <sstream>
+
+namespace
+{
+void append_json_number(std::ostream& out, double value)
+{
+    if (std::isfinite(value)) out << value;
+    else out << "null";
+}
+
+std::string tcp_json(const BridgeRtdeSample::Vector6& tcp)
+{
+    std::ostringstream out;
+    out << std::setprecision(17) << '[';
+    for (std::size_t i = 0; i < tcp.size(); ++i)
+    {
+        if (i) out << ',';
+        append_json_number(out, tcp[i]);
+    }
+    out << ']';
+    return out.str();
+}
+
+template <class T>
+std::string scalar_vector_json(const std::vector<T>& values)
+{
+    std::ostringstream out;
+    out << std::setprecision(17) << '[';
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        if (i) out << ',';
+        append_json_number(out, static_cast<double>(values[i]));
+    }
+    out << ']';
+    return out.str();
+}
+
+template <class T>
+bool finite_vector(const std::vector<T>& values)
+{
+    return std::all_of(values.begin(), values.end(),
+        [](const T& value) { return std::isfinite(static_cast<double>(value)); });
+}
+
+bool finite_pose(const geometry_msgs::Pose& pose)
+{
+    const double values[] = {pose.position.x, pose.position.y, pose.position.z,
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
+    return std::all_of(std::begin(values), std::end(values),
+        [](double value) { return std::isfinite(value); });
+}
+
+std::string cart_goal_json(const rpwc_msgs::nativeCartesianCommandsGoal& goal)
+{
+    std::ostringstream out;
+    out << std::setprecision(17) << "{\"type\":\"MoveL\",\"poses\":[";
+    for (std::size_t i = 0; i < goal.Poses.size(); ++i)
+    {
+        if (i) out << ',';
+        const auto& p = goal.Poses[i];
+        const double components[] = {p.position.x, p.position.y, p.position.z,
+            p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w};
+        out << '[';
+        for (std::size_t k = 0; k < 7; ++k)
+        {
+            if (k) out << ',';
+            append_json_number(out, components[k]);
+        }
+        out << ']';
+    }
+    out << "],\"types\":[";
+    for (std::size_t i = 0; i < goal.types.size(); ++i)
+    {
+        if (i) out << ',';
+        out << '"' << BridgeTraceRecorder::jsonEscape(goal.types[i]) << '"';
+    }
+    out << "],\"velocities\":" << scalar_vector_json(goal.velocities)
+        << ",\"accelerations\":" << scalar_vector_json(goal.accelerations)
+        << ",\"zone_radiuses\":" << scalar_vector_json(goal.zone_radiuses) << '}';
+    return out.str();
+}
+
+std::string joint_goal_json(const rpwc_msgs::nativeJointsCommandsGoal& goal)
+{
+    std::ostringstream out;
+    out << "{\"type\":\"MoveJ\",\"targets\":[";
+    for (std::size_t i = 0; i < goal.targets.size(); ++i)
+    {
+        if (i) out << ',';
+        out << scalar_vector_json(goal.targets[i].values);
+    }
+    out << "],\"velocities\":" << scalar_vector_json(goal.velocities)
+        << ",\"accelerations\":" << scalar_vector_json(goal.accelerations)
+        << ",\"zone_radiuses\":" << scalar_vector_json(goal.zone_radiuses) << '}';
+    return out.str();
+}
+
+class GoalTraceScope
+{
+public:
+    GoalTraceScope(const std::string& attempt_id, std::uint32_t segment_id,
+                   const std::string& goal_json)
+        : attempt_id_(attempt_id), segment_id_(segment_id)
+    {
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->beginGoal(attempt_id_, segment_id_, goal_json);
+    }
+    ~GoalTraceScope()
+    {
+        if (bridge_trace_recorder_)
+        {
+            bridge_trace_recorder_->endGoal(attempt_id_, segment_id_,
+                std::string("{\"success\":") + (success_ ? "true" : "false") +
+                ",\"reason\":\"" + BridgeTraceRecorder::jsonEscape(reason_) + "\"}");
+        }
+        active_motion_goal_.store(false);
+    }
+    void success() { success_ = true; reason_ = "completed"; }
+    void reason(std::string value) { reason_ = std::move(value); }
+
+private:
+    std::string attempt_id_;
+    std::uint32_t segment_id_;
+    bool success_ = false;
+    std::string reason_ = "aborted";
+};
+
+std::string tcp_state_json(const std::string& reason)
+{
+    std::ostringstream out;
+    out << "{\"reason\":\"" << BridgeTraceRecorder::jsonEscape(reason) << "\"";
+    if (tcp_verifier_)
+    {
+        BridgeRtdeSample sample;
+        out << ",\"expected_tcp\":" << tcp_json(tcp_verifier_->expected())
+            << ",\"epoch\":" << tcp_verifier_->epoch()
+            << ",\"sequence\":" << tcp_verifier_->sequence();
+        if (tcp_verifier_->snapshot(sample))
+        {
+            out << ",\"actual_tcp\":" << tcp_json(sample.tcp_offset)
+                << ",\"controller_timestamp\":" << std::setprecision(17);
+            append_json_number(out, sample.controller_timestamp);
+        }
+    }
+    out << '}';
+    return out.str();
+}
+
+bool requiredRecipePresent(const std::vector<std::string>& recipe)
+{
+    static const char* fields[] = {"timestamp", "actual_q", "actual_qd", "target_q",
+        "target_TCP_pose", "actual_TCP_pose", "tcp_offset", "runtime_state",
+        "robot_mode", "safety_mode", "actual_digital_input_bits", "actual_digital_output_bits"};
+    for (const char* field : fields)
+    {
+        if (std::find(recipe.begin(), recipe.end(), field) == recipe.end())
+        {
+            ROS_FATAL_STREAM("Required RTDE output missing after recipe negotiation: " << field);
+            return false;
+        }
+    }
+    return true;
+}
+}
+
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
@@ -13,6 +182,7 @@ void set_init_end_status(const bool success, const std::string &msg)
     if (success)
         return;
 
+    ros::requestShutdown();
     ros::waitForShutdown();
     shutdown(msg);
 }
@@ -51,58 +221,116 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode)
 
 void thread_handle_rtde()
 {
+    try
+    {
     ROS_INFO("[handle_rtde]: Init");
     ros::Rate rate(freq_rtde_hz_);
-    std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg{new urcl::rtde_interface::DataPackage(ur_driver_->getRTDEOutputRecipe())};
+    urcl::rtde_interface::DataPackage data_pkg(ur_driver_->getRTDEOutputRecipe());
 
     ROS_INFO("[handle_rtde]: Start");
-    ur_driver_->startRTDECommunication(false);
+    // Background RTDE reading makes getDataPackage() bounded (0/100 ms in
+    // this URCL), allowing the reader to stop before driver teardown.
+    ur_driver_->startRTDECommunication(true);
 
-    while (ros::ok())
+    while (bridge_threads_running_.load() && ros::ok())
     {
-        if (!ur_driver_->getDataPackageBlocking(data_pkg))
+        if (!ur_driver_->getDataPackage(data_pkg))
         {
+            if (tcp_verifier_ && tcp_verifier_->onNoPackage())
+            {
+                ROS_ERROR("[TCP]: RTDE stream stale; motion blocked until reconfiguration");
+                if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+                cancel_required_.store(true);
+                if (bridge_trace_recorder_)
+                    bridge_trace_recorder_->event("rtde_stale", tcp_state_json("no new RTDE package"));
+            }
             rate.sleep();
             continue;
         }
 
-        // Robot joints data
+        BridgeRtdeSample sample;
+        std::uint64_t in_bits = 0, out_bits = 0;
+        const bool complete = data_pkg.getData<double>("timestamp", sample.controller_timestamp) &&
+            data_pkg.getData<urcl::vector6d_t>("actual_q", sample.actual_q) &&
+            data_pkg.getData<urcl::vector6d_t>("actual_qd", sample.actual_qd) &&
+            data_pkg.getData<urcl::vector6d_t>("target_q", sample.target_q) &&
+            data_pkg.getData<urcl::vector6d_t>("target_TCP_pose", sample.target_tcp_pose) &&
+            data_pkg.getData<urcl::vector6d_t>("actual_TCP_pose", sample.actual_tcp_pose) &&
+            data_pkg.getData<urcl::vector6d_t>("tcp_offset", sample.tcp_offset) &&
+            data_pkg.getData<uint32_t>("runtime_state", sample.runtime_state) &&
+            data_pkg.getData<int32_t>("robot_mode", sample.robot_mode) &&
+            data_pkg.getData<int32_t>("safety_mode", sample.safety_mode) &&
+            data_pkg.getData<std::uint64_t>("actual_digital_input_bits", in_bits) &&
+            data_pkg.getData<std::uint64_t>("actual_digital_output_bits", out_bits);
+        if (!complete)
         {
-            urcl::vector6d_t joints, vels;
-            data_pkg->getData<urcl::vector6d_t>("actual_q", joints);
-            data_pkg->getData<urcl::vector6d_t>("actual_qd", vels);
-            kinematics_manager_->updateRtdeJointData(joints, vels);
+            ROS_FATAL("Mandatory RTDE field missing in data package; stopping bridge");
+            if (tcp_verifier_) tcp_verifier_->fail(tcp_verifier_->epoch(), "Mandatory RTDE field missing");
+            cancel_required_.store(true);
+            ros::requestShutdown();
+            break;
         }
 
-        // IO signals data
+        const auto event = tcp_verifier_->observe(sample);
+        if (event == TcpVerifier::Event::DUPLICATE_SAMPLE)
+            continue;
+        if (event == TcpVerifier::Event::INVALID_SAMPLE)
         {
-            std::uint64_t in_bits, out_bits;
-            data_pkg->getData<std::uint64_t>("actual_digital_input_bits", in_bits);
-            data_pkg->getData<std::uint64_t>("actual_digital_output_bits", out_bits);
-            io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
-            io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
+            ROS_ERROR("Invalid RTDE controller timestamp; motion blocked");
+            cancel_required_.store(true);
+            if (bridge_trace_recorder_)
+                bridge_trace_recorder_->event("rtde_invalid", tcp_state_json("invalid timestamp"));
+            continue;
         }
 
-        // Runtime state
+        kinematics_manager_->updateRtdeJointData(sample.actual_q, sample.actual_qd);
+
+        io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
+        io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
+        robot_state_manager_->updateRtdeState(sample.runtime_state, sample.robot_mode, sample.safety_mode);
+        if (bridge_trace_recorder_)
         {
-            uint32_t rt_state = 0;
-            int32_t robot_mode = 0, safety_mode = 0;
-            data_pkg->getData<uint32_t>("runtime_state", rt_state);
-            data_pkg->getData<int32_t>("robot_mode", robot_mode);
-            data_pkg->getData<int32_t>("safety_mode", safety_mode);
-            robot_state_manager_->updateRtdeState(rt_state, robot_mode, safety_mode);
+            bridge_trace_recorder_->sample(sample);
+            if (!bridge_trace_recorder_->healthy())
+                ROS_ERROR_THROTTLE(10.0, "[Trace]: bridge RTDE trace storage is unavailable; trace is incomplete");
+        }
+
+        if (event != TcpVerifier::Event::NONE)
+        {
+            const char* name = event == TcpVerifier::Event::PROGRAM_STARTED ? "program_started" :
+                               event == TcpVerifier::Event::PROGRAM_STOPPED ? "program_stopped" :
+                               event == TcpVerifier::Event::TIMESTAMP_RESET ? "controller_timestamp_reset" :
+                               "tcp_changed";
+            ROS_WARN_STREAM("[TCP]: " << name << " epoch=" << sample.program_epoch);
+            if (bridge_trace_recorder_) bridge_trace_recorder_->event(name, tcp_state_json(name));
+            if (event != TcpVerifier::Event::PROGRAM_STARTED)
+            {
+                kinematics_manager_->invalidateRobotConfig();
+                cancel_required_.store(true);
+            }
         }
 
         rate.sleep();
     }
 
+    }
+    catch (const std::exception& e)
+    {
+        ROS_FATAL_STREAM("[handle_rtde]: RTDE reader failed: " << e.what());
+        if (tcp_verifier_) tcp_verifier_->fail(tcp_verifier_->epoch(), e.what());
+        if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+        cancel_required_.store(true);
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->event("rtde_reader_failed", tcp_state_json(e.what()));
+        ros::requestShutdown();
+    }
     ROS_INFO("[handle_rtde]: Shutdown");
 }
 
 void thread_keep_alive()
 {
     ros::Rate rate(freq_rtde_hz_);
-    while (ros::ok())
+    while (bridge_threads_running_.load() && ros::ok())
     {
         if (!robot_state_manager_ || !robot_state_manager_->isReady())
         {
@@ -125,13 +353,113 @@ void thread_keep_alive()
 
 void handleRobotProgramState(bool program_running)
 {
+    std::lock_guard<std::mutex> callback_lock(program_callback_mutex_);
+    if (!program_callback_enabled_) return;
+    ur_program_connected_.store(program_running);
+    if (!program_running && tcp_verifier_)
+    {
+        tcp_verifier_->onProgramDisconnected();
+        if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+        cancel_required_.store(true);
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->event("script_disconnected", tcp_state_json("URScript program disconnected"));
+    }
+    else if (program_running && bridge_trace_recorder_)
+        bridge_trace_recorder_->event("script_connected", tcp_state_json("URScript program connected"));
     if (robot_state_manager_)
         robot_state_manager_->onProgramStateChanged(program_running);
+}
+
+bool motion_ready()
+{
+    return ur_program_connected_.load() && robot_state_manager_ && robot_state_manager_->isReady() &&
+           tcp_verifier_ && tcp_verifier_->motionReady() &&
+           kinematics_manager_ && kinematics_manager_->isRobotConfigVerified();
+}
+
+void thread_configure_robot()
+{
+    while (config_worker_running_.load() && ros::ok())
+    {
+        // Independent freshness watch also covers a stalled RTDE background reader.
+        if (tcp_verifier_->onNoPackage())
+        {
+            kinematics_manager_->invalidateRobotConfig();
+            cancel_required_.store(true);
+            ROS_ERROR("[TCP]: RTDE watchdog expired; motion blocked");
+            if (bridge_trace_recorder_)
+                bridge_trace_recorder_->event("rtde_stale", tcp_state_json("watchdog expired"));
+        }
+        if (cancel_required_.exchange(false) && ur_instruction_executor_)
+            ur_instruction_executor_->cancelMotion();
+
+        if (!ur_program_connected_.load() || !robot_state_manager_ ||
+            !robot_state_manager_->isReady() || !tcp_verifier_->programRunning())
+        {
+            tcp_verifier_->waitForChange(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        const std::uint64_t epoch = tcp_verifier_->claimPendingEpoch();
+        if (!epoch)
+        {
+            tcp_verifier_->waitForChange(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->event("tcp_configuration_started", tcp_state_json("set_tcp requested"));
+        try
+        {
+            kinematics_manager_->applyRobotConfig();
+            const std::uint64_t after_sequence = tcp_verifier_->sequence();
+            if (!tcp_verifier_->beginVerification(epoch, after_sequence))
+                continue;
+
+            const auto result = tcp_verifier_->waitForVerification(epoch,
+                std::chrono::milliseconds(static_cast<int>(tcp_verification_timeout_s_ * 1000.0)));
+            if (result == TcpVerifier::WaitResult::VERIFIED)
+            {
+                kinematics_manager_->markRobotConfigVerified();
+                ROS_INFO_STREAM("[TCP]: Controller readback verified for program epoch " << epoch);
+                if (bridge_trace_recorder_)
+                    bridge_trace_recorder_->event("tcp_verified", tcp_state_json("two matching post-write RTDE samples"));
+            }
+            else if (result == TcpVerifier::WaitResult::TIMEOUT)
+            {
+                tcp_verifier_->fail(epoch, "TCP readback did not match before timeout");
+                ROS_ERROR_STREAM("[TCP]: Verification failed: " << tcp_state_json("timeout or mismatch"));
+                if (bridge_trace_recorder_)
+                    bridge_trace_recorder_->event("tcp_verification_failed", tcp_state_json("timeout or mismatch"));
+            }
+        }
+        catch (const std::exception& e)
+        {
+            tcp_verifier_->fail(epoch, e.what());
+            ROS_ERROR_STREAM("[TCP]: Configuration failed: " << e.what());
+            if (bridge_trace_recorder_)
+                bridge_trace_recorder_->event("tcp_configuration_failed", tcp_state_json(e.what()));
+        }
+    }
 }
 
 void shutdown(std::string reason)
 {
     ROS_WARN_STREAM("Shutting down node, reason: " << reason);
+    ros::requestShutdown();
+    if (spinner_) spinner_->stop();
+    bridge_threads_running_.store(false);
+    config_worker_running_.store(false);
+    if (config_thread_.joinable()) config_thread_.join();
+    if (rtde_thread_.joinable()) rtde_thread_.join();
+    if (keep_alive_thread_.joinable()) keep_alive_thread_.join();
+    if (robot_state_manager_) robot_state_manager_->stop();
+    // Drain any in-flight URCL callback before dashboard or driver teardown.
+    {
+        std::lock_guard<std::mutex> callback_lock(program_callback_mutex_);
+        program_callback_enabled_ = false;
+        ur_program_connected_.store(false);
+    }
     if (nh_ != nullptr)
     {
         motor_off_on_shutdown_ = nh_->param("motor_off_for_deactivation", true);
@@ -155,16 +483,34 @@ void shutdown(std::string reason)
     if (ur_driver_)
         ur_driver_->stopControl();
 
+    // Release every shared driver owner so URCL is destroyed while verifier
+    // and recorder still exist. Its late program callbacks now return early.
+    robot_state_manager_.reset();
+    io_manager_.reset();
+    kinematics_manager_.reset();
+    ur_instruction_executor_.reset();
+    ur_primary_.reset();
+    ur_driver_.reset();
+    if (bridge_trace_recorder_)
+    {
+        bridge_trace_recorder_->stop();
+        bridge_trace_recorder_.reset();
+    }
+    tcp_verifier_.reset();
+    ur_dashboard_.reset();
+
     ur_driver::unregisterUrclLogHandler();
     urcl::setLogLevel(urcl::LogLevel::INFO);
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
 {
-    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    if (!motion_ready())
         return false;
 
     std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
+    if (!motion_ready())
+        return false;
     return ur_instruction_executor_->executeMotion(waypoints);
 }
 
@@ -187,6 +533,21 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velo
         vel = max_speed_linear_ * velocities[i];
         acc = max_acceleration_linear_ * accelerations[i];
 
+        if (bridge_trace_recorder_)
+        {
+            std::ostringstream details;
+            details << std::setprecision(17) << "{\"index\":" << i << ",\"type\":\"MoveL\",\"pose\":"
+                << tcp_json({pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz})
+                << ",\"velocity\":";
+            append_json_number(details, vel);
+            details << ",\"acceleration\":";
+            append_json_number(details, acc);
+            details << ",\"blend_radius\":";
+            append_json_number(details, blending_radiuses[i]);
+            details << '}';
+            bridge_trace_recorder_->event("primitive_created", details.str());
+        }
+
         targets.push_back(std::make_shared<urcl::control::MoveLPrimitive>(pose, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
     }
 
@@ -208,6 +569,20 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
         vel = max_speed_joint_ * velocities[i];
         acc = max_acceleration_joint_ * accelerations[i];
 
+        if (bridge_trace_recorder_)
+        {
+            std::ostringstream details;
+            details << std::setprecision(17) << "{\"index\":" << i << ",\"type\":\"MoveJ\",\"joints\":"
+                << tcp_json(joints) << ",\"velocity\":";
+            append_json_number(details, vel);
+            details << ",\"acceleration\":";
+            append_json_number(details, acc);
+            details << ",\"blend_radius\":";
+            append_json_number(details, blending_radiuses[i]);
+            details << '}';
+            bridge_trace_recorder_->event("primitive_created", details.str());
+        }
+
         targets.push_back(std::make_shared<urcl::control::MoveJPrimitive>(joints, blending_radiuses[i], std::chrono::milliseconds(0), acc, vel));
     }
 
@@ -221,8 +596,15 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res)
 {
     res.status.data = init_status_;
-    res.result.data = init_success_;
-    res.info.data = init_msg_;
+    res.result.data = init_success_ && motion_ready();
+    if (init_success_ && !res.result.data)
+    {
+        res.info.data = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() :
+            "Robot program, TCP verification, or RTDE stream not ready";
+    }
+    else
+        res.info.data = init_msg_;
     return true;
 }
 
@@ -373,10 +755,11 @@ CartesianMove::~CartesianMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeCartesianCommandsResult result;
+        result.success = false;
+        result.error_code = 9;
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -384,7 +767,23 @@ CartesianMove::~CartesianMove(void)
 void CartesianMove::goal_callback()
 {
     ROS_INFO("[Cartesian Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto rpwc_goal = as.acceptNewGoal();
+    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
+    if (active_motion_goal_.exchange(true))
+    {
+        // SimpleActionServer may already have preempted the previous action
+        // when acceptNewGoal() returned. Stop its physical motion before
+        // rejecting this overlapping goal.
+        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+            robot_state_manager_ && !robot_state_manager_->forceProgramStop())
+            ROS_FATAL("[Cartesian Move]: Could not confirm cancellation of overlapping motion");
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Another robot motion is active";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    GoalTraceScope trace(rpwc_goal->attempt_id, rpwc_goal->segment_id, cart_goal_json(*rpwc_goal));
 
     if (!robot_state_manager_ || !robot_state_manager_->isReady())
     {
@@ -412,15 +811,41 @@ void CartesianMove::goal_callback()
         }
     }
 
-    long unsigned int len = rpwc_goal->Poses.size();
-    if (rpwc_goal->types.size() < len)
-        len = rpwc_goal->types.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    if (!motion_ready())
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() : "TCP not verified or RTDE stale";
+        trace.reason(rpwc_result.msg);
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->event("goal_rejected_tcp", tcp_state_json(rpwc_result.msg));
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+
+    const std::size_t len = rpwc_goal->Poses.size();
+    if (rpwc_goal->types.size() != len || rpwc_goal->velocities.size() != len ||
+        rpwc_goal->accelerations.size() != len || rpwc_goal->zone_radiuses.size() != len)
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Cartesian goal array lengths differ";
+        trace.reason(rpwc_result.msg);
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    if (!finite_vector(rpwc_goal->velocities) || !finite_vector(rpwc_goal->accelerations) ||
+        !finite_vector(rpwc_goal->zone_radiuses) ||
+        !std::all_of(rpwc_goal->Poses.begin(), rpwc_goal->Poses.end(), finite_pose))
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Cartesian goal contains nonfinite values";
+        trace.reason(rpwc_result.msg);
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
 
     ROS_INFO_STREAM("[Cartesian Move]: Max valid poses: " << len);
     if (len == 0)
@@ -429,6 +854,7 @@ void CartesianMove::goal_callback()
         rpwc_result.success = false;
         rpwc_result.error_code = 9;
         rpwc_result.msg = "No data found";
+        trace.reason(rpwc_result.msg);
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
@@ -441,6 +867,7 @@ void CartesianMove::goal_callback()
             rpwc_result.success = false;
             rpwc_result.error_code = 9;
             rpwc_result.msg = "Uknown move type";
+            trace.reason(rpwc_result.msg);
             as.setAborted(rpwc_result, rpwc_result.msg);
             return;
         }
@@ -454,12 +881,14 @@ void CartesianMove::goal_callback()
         ROS_INFO("[Cartesian Move]: Goal aborted");
         rpwc_result.error_code = 9;
         rpwc_result.msg = "Goal failed";
+        trace.reason(rpwc_result.msg);
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
 
     ROS_INFO("[Cartesian Move]: Goal completed");
     rpwc_result.msg = "Goal succeded";
+    trace.success();
     as.setSucceeded(rpwc_result, rpwc_result.msg);
 }
 
@@ -478,7 +907,11 @@ void CartesianMove::preempt_callback()
         {
             ROS_ERROR("[Cartesian Move]: Failed to force-stop robot program, falling back to cancelMotion");
             ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            rpwc_msgs::nativeCartesianCommandsResult result;
+            result.success = false;
+            result.error_code = 9;
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            as.setAborted(result, result.msg);
         }
     }
     else
@@ -501,10 +934,11 @@ JointsMove::~JointsMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeJointsCommandsResult result;
+        result.success = false;
+        result.error_code = 9;
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -512,7 +946,20 @@ JointsMove::~JointsMove(void)
 void JointsMove::goal_callback()
 {
     ROS_INFO("[Joints Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto rpwc_goal = as.acceptNewGoal();
+    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
+    if (active_motion_goal_.exchange(true))
+    {
+        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+            robot_state_manager_ && !robot_state_manager_->forceProgramStop())
+            ROS_FATAL("[Joints Move]: Could not confirm cancellation of overlapping motion");
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Another robot motion is active";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    GoalTraceScope trace(rpwc_goal->attempt_id, rpwc_goal->segment_id, joint_goal_json(*rpwc_goal));
 
     if (!robot_state_manager_ || !robot_state_manager_->isReady())
     {
@@ -540,13 +987,40 @@ void JointsMove::goal_callback()
         }
     }
 
-    long unsigned int len = rpwc_goal->targets.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    if (!motion_ready())
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() : "TCP not verified or RTDE stale";
+        trace.reason(rpwc_result.msg);
+        if (bridge_trace_recorder_)
+            bridge_trace_recorder_->event("goal_rejected_tcp", tcp_state_json(rpwc_result.msg));
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+
+    const std::size_t len = rpwc_goal->targets.size();
+    if (rpwc_goal->velocities.size() != len || rpwc_goal->accelerations.size() != len ||
+        rpwc_goal->zone_radiuses.size() != len)
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Joint goal array lengths differ";
+        trace.reason(rpwc_result.msg);
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    if (!finite_vector(rpwc_goal->velocities) || !finite_vector(rpwc_goal->accelerations) ||
+        !finite_vector(rpwc_goal->zone_radiuses))
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Joint goal contains nonfinite speed or blend values";
+        trace.reason(rpwc_result.msg);
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
 
     ROS_INFO_STREAM("[Joints Move]: Max valid poses: " << len);
     if (len == 0)
@@ -555,6 +1029,7 @@ void JointsMove::goal_callback()
         rpwc_result.success = false;
         rpwc_result.error_code = 9;
         rpwc_result.msg = "No data found";
+        trace.reason(rpwc_result.msg);
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
@@ -564,6 +1039,24 @@ void JointsMove::goal_callback()
     tmpWaypoint.resize(kinematics_manager_->getNumJoints());
     for (auto it = rpwc_goal->targets.begin(); it != rpwc_goal->targets.end(); it++)
     {
+        if (it->values.size() != static_cast<std::size_t>(kinematics_manager_->getNumJoints()))
+        {
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Joint goal has incorrect joint count";
+            trace.reason(rpwc_result.msg);
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
+        if (!finite_vector(it->values))
+        {
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Joint goal contains nonfinite target";
+            trace.reason(rpwc_result.msg);
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
         for (int i = 0; i < kinematics_manager_->getNumJoints(); i++)
         {
             tmpWaypoint(i) = it->values[i];
@@ -579,12 +1072,14 @@ void JointsMove::goal_callback()
         ROS_INFO("[Joints Move]: Goal aborted");
         rpwc_result.error_code = 9;
         rpwc_result.msg = "Goal failed";
+        trace.reason(rpwc_result.msg);
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
 
     ROS_INFO("[Joints Move]: Goal completed");
     rpwc_result.msg = "Goal succeded";
+    trace.success();
     as.setSucceeded(rpwc_result, rpwc_result.msg);
 }
 
@@ -603,7 +1098,11 @@ void JointsMove::preempt_callback()
         {
             ROS_ERROR("[Joints Move]: Failed to force-stop robot program, falling back to cancelMotion");
             ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            rpwc_msgs::nativeJointsCommandsResult result;
+            result.success = false;
+            result.error_code = 9;
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            as.setAborted(result, result.msg);
         }
     }
     else
@@ -621,8 +1120,8 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "rpwc_ur_bridge_native");
     nh_ = new ros::NodeHandle();
-    ros::AsyncSpinner spinner(4);
-    spinner.start();
+    spinner_.reset(new ros::AsyncSpinner(4));
+    spinner_->start();
 
     // Set default 
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
@@ -698,6 +1197,18 @@ int main(int argc, char **argv)
     }
 
     nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
+    nh_->param<double>("tcp_verification_timeout_s", tcp_verification_timeout_s_, 2.0);
+    double startup_tcp_timeout_s = 20.0;
+    nh_->param<double>("startup_tcp_timeout_s", startup_tcp_timeout_s, startup_tcp_timeout_s);
+    if (!std::isfinite(freq_rtde_hz_) || freq_rtde_hz_ <= 0.0 ||
+        !std::isfinite(tcp_verification_timeout_s_) || tcp_verification_timeout_s_ <= 0.0 ||
+        !std::isfinite(startup_tcp_timeout_s) || startup_tcp_timeout_s <= 0.0 ||
+        !std::isfinite(max_speed_linear_) || !std::isfinite(max_acceleration_linear_) ||
+        !std::isfinite(max_speed_joint_) || !std::isfinite(max_acceleration_joint_))
+    {
+        set_init_end_status(false, "Invalid RTDE, TCP verification, or motion scale parameter");
+        return 1;
+    }
 
     bool auto_recover_protective_stop;
     double recovery_timeout_s;
@@ -819,8 +1330,22 @@ int main(int argc, char **argv)
     urDriverConfig.headless_mode = true;
     urDriverConfig.handle_program_state = &handleRobotProgramState;
 
-    ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
-    ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
+    try
+    {
+        ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
+        ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file,
+            urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
+    }
+    catch (const std::exception& e)
+    {
+        set_init_end_status(false, std::string("UR driver or RTDE initialization failed: ") + e.what());
+        return 1;
+    }
+    if (!requiredRecipePresent(ur_driver_->getRTDEOutputRecipe()))
+    {
+        set_init_end_status(false, "Required RTDE fields unavailable");
+        return 1;
+    }
     ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
     // Init IO Manager
@@ -828,30 +1353,84 @@ int main(int argc, char **argv)
     ros::param::get("io_signals_names_path", io_json_path);
     io_manager_.reset(new IOManager(*nh_, ur_driver_, io_json_path));
 
+    // Build KDL and the expected controller TCP before RTDE can deliver a packet.
+    try
+    {
+        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
+    }
+    catch (const std::exception &e)
+    {
+        set_init_end_status(false, e.what());
+        return 1;
+    }
+    const auto expected = kinematics_manager_->expectedTcpOffset();
+    const double max_age_seconds = std::max(0.25, 5.0 / freq_rtde_hz_);
+    try
+    {
+        tcp_verifier_.reset(new TcpVerifier(expected,
+            std::chrono::milliseconds(static_cast<int>(max_age_seconds * 1000.0))));
+    }
+    catch (const std::exception& e)
+    {
+        set_init_end_status(false, std::string("Invalid controller TCP configuration: ") + e.what());
+        return 1;
+    }
+
+    // Both RPWC and this bridge resolve the same mounted ROS package directory.
+    const std::string rpwc_path = ros::package::getPath("rpwc");
+    if (rpwc_path.empty())
+    {
+        ROS_ERROR("[Trace]: rpwc package path unavailable; diagnostics cannot be persisted");
+    }
+    else
+    {
+        std::string trace_root = rpwc_path + "/tool_change_traces";
+        nh_->param<std::string>("tool_change_trace_dir", trace_root, trace_root);
+        int queue_capacity = 8192, preroll_samples = 500, max_samples = 45000;
+        int capture_duration_s = 1200;
+        nh_->param<int>("tool_change_trace_queue_capacity", queue_capacity, queue_capacity);
+        nh_->param<int>("tool_change_trace_preroll_samples", preroll_samples, preroll_samples);
+        nh_->param<int>("tool_change_trace_max_samples_per_attempt", max_samples, max_samples);
+        nh_->param<int>("tool_change_trace_capture_duration_s", capture_duration_s, capture_duration_s);
+        if (trace_root.empty() || queue_capacity <= 0 || preroll_samples < 0 ||
+            max_samples <= 0 || capture_duration_s <= 0)
+        {
+            ROS_ERROR("[Trace]: invalid trace settings; diagnostics disabled");
+        }
+        else
+        {
+            bridge_trace_recorder_.reset(new BridgeTraceRecorder(trace_root, name_space_,
+                static_cast<std::size_t>(queue_capacity), static_cast<std::size_t>(preroll_samples),
+                static_cast<std::size_t>(max_samples), std::chrono::seconds(capture_duration_s)));
+            std::ostringstream startup_details;
+            startup_details << std::setprecision(17)
+                << "{\"expected_tcp\":" << tcp_json(tcp_verifier_->expected())
+                << ",\"calibration_hash\":\"" << BridgeTraceRecorder::jsonEscape(calibration_hash_) << '"'
+                << ",\"rtde_hz\":" << freq_rtde_hz_
+                << ",\"tcp_verification_timeout_s\":" << tcp_verification_timeout_s_
+                << ",\"max_speed_linear\":" << max_speed_linear_
+                << ",\"max_acceleration_linear\":" << max_acceleration_linear_
+                << ",\"max_speed_joint\":" << max_speed_joint_
+                << ",\"max_acceleration_joint\":" << max_acceleration_joint_ << '}';
+            bridge_trace_recorder_->event("bridge_started", startup_details.str());
+        }
+    }
+
     // Init Robot State Manager
     robot_state_manager_.reset(new RobotStateManager(*nh_, ur_driver_, ur_dashboard_, auto_recover_protective_stop, recovery_timeout_s, recovery_retries));
     robot_state_manager_->setOnBlockedCallback([]() {
         if (ur_instruction_executor_)
             ur_instruction_executor_->cancelMotion();
     });
-    robot_state_manager_->setOnProgramRestartedCallback([]() {
-        if (!kinematics_manager_)
-            return;
-        try
-        {
-            kinematics_manager_->applyRobotConfig();
-        }
-        catch (const std::exception &e)
-        {
-            ROS_ERROR_STREAM("[ProgramRestarted]: Failed to reapply TCP/payload config: " << e.what());
-        }
-    });
-
-    std::thread rtde_thread{&thread_handle_rtde};
+    bridge_threads_running_.store(true);
+    rtde_thread_ = std::thread(&thread_handle_rtde);
     robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
     ROS_INFO_STREAM("checkCalibration: " << (calibValid ? "VALID" : "INVALID"));
+    if (bridge_trace_recorder_)
+        bridge_trace_recorder_->event("calibration_checked",
+            std::string("{\"matches_expected_hash\":") + (calibValid ? "true" : "false") + "}");
     if (!calibValid)
     {
         ROS_ERROR_STREAM("The calibration parameters of the connected robot don't match the ones from the given kinematics "
@@ -865,34 +1444,37 @@ int main(int argc, char **argv)
     ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
     ur_primary_ = ur_driver_->getPrimaryClient();
 
-    // Init Kinematics Manager (parses URDF, builds KDL chains, sets TCP offset)
-    try
-    {
-        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
-    }
-    catch (const std::exception &e)
-    {
-        set_init_end_status(false, e.what());
-        return 1;
-    }
+    config_worker_running_.store(true);
+    config_thread_ = std::thread(&thread_configure_robot);
     // Wait for program start — state manager handles recovery and shutdown on failure
-    while (!robot_state_manager_->isReady() && ros::ok())
+    const auto startup_deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<int>(startup_tcp_timeout_s * 1000.0));
+    while (!robot_state_manager_->isReady() && ros::ok() &&
+           std::chrono::steady_clock::now() < startup_deadline)
         ros::Duration(0.05).sleep();
 
-    if (!ros::ok())
+    if (!ros::ok() || !robot_state_manager_->isReady())
     {
-        set_init_end_status(false, "Program start failed");
+        const std::string message = "Program or RTDE did not become ready before startup timeout";
+        ROS_FATAL_STREAM(message);
+        ros::requestShutdown();
+        set_init_end_status(false, message);
         return 1;
     }
 
-    // Apply robot configuration (TCP offset + payload) and start KM threads
-    try
+    // The configuration worker applies TCP/payload and confirms the active TCP
+    // from fresh controller RTDE packets before any motion action is advertised.
+    while (ros::ok() && !motion_ready() && !tcp_verifier_->isFault() &&
+           std::chrono::steady_clock::now() < startup_deadline)
+        ros::Duration(0.05).sleep();
+    if (!ros::ok() || !motion_ready())
     {
-        kinematics_manager_->applyRobotConfig();
-    }
-    catch (const std::exception &e)
-    {
-        set_init_end_status(false, e.what());
+        const std::string message = tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() :
+            "TCP was not verified before startup timeout";
+        ROS_FATAL_STREAM(message);
+        ros::requestShutdown();
+        set_init_end_status(false, message);
         return 1;
     }
     kinematics_manager_->start(freq_rtde_hz_);
@@ -919,12 +1501,11 @@ int main(int argc, char **argv)
     JointsMove joint_act_srv("native_joints_commands");
 
     ROS_INFO("start");
-    std::thread keep_alive(&thread_keep_alive);
+    keep_alive_thread_ = std::thread(&thread_keep_alive);
     set_init_end_status(true, "Node started");
     ros::waitForShutdown();
 
     ROS_INFO("Exiting");
-    spinner.stop();
     shutdown("Node shutdown");
     return 0;
 }

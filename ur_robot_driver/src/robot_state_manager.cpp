@@ -51,6 +51,8 @@ bool RobotStateManager::forceProgramStop()
 
 void RobotStateManager::onProgramStateChanged(bool running)
 {
+    if (!running)
+        robot_program_ready_.store(false, std::memory_order_relaxed);
     std::string robot_mode_str, safety_mode_str;
     dashboard_->commandRobotMode(robot_mode_str);
     dashboard_->commandSafetyMode(safety_mode_str);
@@ -192,6 +194,7 @@ bool RobotStateManager::attemptRecovery()
                     catch (const std::exception &e)
                     {
                         ROS_ERROR_STREAM("[StateManager]: on_program_restarted_callback_ threw: " << e.what());
+                        return false;
                     }
                 }
                 return true;
@@ -224,7 +227,7 @@ void RobotStateManager::monitorThread()
         {
             if (!robot_program_ready_.load(std::memory_order_relaxed))
             {
-                ROS_INFO("[StateManager]: Robot program running, bridge ready");
+                ROS_INFO("[StateManager]: Robot program running; motion waits for TCP verification");
                 robot_program_ready_.store(true, std::memory_order_relaxed);
             }
             rate.sleep();

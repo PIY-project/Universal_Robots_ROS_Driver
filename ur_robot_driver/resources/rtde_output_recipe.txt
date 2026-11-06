@@ -2,6 +2,10 @@ actual_digital_input_bits
 actual_digital_output_bits
 actual_q
 actual_qd
+target_q
+target_TCP_pose
+actual_TCP_pose
+tcp_offset
 analog_io_types
 robot_mode
 robot_status_bits

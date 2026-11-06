@@ -62,9 +62,34 @@ add_library(urcl_log_handler
 )
 target_link_libraries(urcl_log_handler ${catkin_LIBRARIES} ur_client_library::urcl)
 
-add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp src/io_manager.cpp src/robot_state_manager.cpp src/kinematics_manager.cpp)
+add_executable(rpwc_ur_bridge_native
+  src/rpwc_ur_bridge_native.cpp
+  src/io_manager.cpp
+  src/robot_state_manager.cpp
+  src/kinematics_manager.cpp
+  src/tcp_verifier.cpp
+  src/bridge_trace_recorder.cpp
+)
+target_compile_options(rpwc_ur_bridge_native PRIVATE -std=c++17)
 add_dependencies(rpwc_ur_bridge_native ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl urcl_log_handler)
+
+if(CATKIN_ENABLE_TESTING)
+  find_package(Threads REQUIRED)
+  add_executable(tcp_verifier_test test/tcp_verifier_test.cpp src/tcp_verifier.cpp)
+  target_compile_options(tcp_verifier_test PRIVATE -std=c++17)
+  target_link_libraries(tcp_verifier_test ${CMAKE_THREAD_LIBS_INIT})
+  add_test(NAME tcp_verifier_test COMMAND tcp_verifier_test)
+
+  add_executable(bridge_trace_recorder_test
+    test/bridge_trace_recorder_test.cpp
+    src/bridge_trace_recorder.cpp
+    src/tcp_verifier.cpp
+  )
+  target_compile_options(bridge_trace_recorder_test PRIVATE -std=c++17)
+  target_link_libraries(bridge_trace_recorder_test ${CMAKE_THREAD_LIBS_INIT})
+  add_test(NAME bridge_trace_recorder_test COMMAND bridge_trace_recorder_test)
+endif()
 
 install(TARGETS urcl_log_handler 
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
