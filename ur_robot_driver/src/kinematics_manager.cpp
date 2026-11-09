@@ -3,6 +3,7 @@
 // System includes
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <urdf/model.h>
 #include <kdl_parser/kdl_parser.hpp>
@@ -107,6 +108,13 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
         throw std::runtime_error("Param pitch_Last_Link missing");
     if (!nh_.getParam("yaw_Last_Link", yaw_last_link))
         throw std::runtime_error("Param yaw_Last_Link missing");
+
+    ROS_INFO_STREAM("[TCP]: ROS parameters (translation in m, angles in rad): "
+        << std::setprecision(17)
+        << "x_pos_EE=" << x_pos_ee << " y_pos_EE=" << y_pos_ee << " z_pos_EE=" << z_pos_ee
+        << " roll_EE=" << roll_ee << " pitch_EE=" << pitch_ee << " yaw_EE=" << yaw_ee
+        << " roll_Last_Link=" << roll_last_link << " pitch_Last_Link=" << pitch_last_link
+        << " yaw_Last_Link=" << yaw_last_link);
 
     t_tool02LastLink_ = KDL::Frame::Identity();
     t_tool02LastLink_.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);

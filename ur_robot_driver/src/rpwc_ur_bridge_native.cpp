@@ -8,6 +8,49 @@
 
 namespace
 {
+enum class StartupPhase { STARTING, RUNNING, FAILED };
+std::mutex startup_state_mutex;
+StartupPhase startup_phase = StartupPhase::STARTING;
+std::string startup_rtde_failure;
+bool local_control_detected_at_startup = false;
+
+std::string pending_rtde_failure()
+{
+    std::lock_guard<std::mutex> lock(startup_state_mutex);
+    return startup_rtde_failure;
+}
+
+void report_rtde_fatal(const std::string& reason)
+{
+    bool shutdown_running_bridge = false;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        if (startup_phase == StartupPhase::STARTING)
+        {
+            startup_rtde_failure = reason;
+            startup_phase = StartupPhase::FAILED;
+        }
+        else if (startup_phase == StartupPhase::RUNNING)
+            shutdown_running_bridge = true;
+    }
+    if (shutdown_running_bridge)
+        ros::requestShutdown();
+}
+
+template <class F>
+void cleanup_step(const char* name, F&& operation)
+{
+    try { operation(); }
+    catch (const std::exception& e)
+    {
+        ROS_ERROR_STREAM("[Shutdown]: " << name << " failed: " << e.what());
+    }
+    catch (...)
+    {
+        ROS_ERROR_STREAM("[Shutdown]: " << name << " failed with an unknown exception");
+    }
+}
+
 void append_json_number(std::ostream& out, double value)
 {
     if (std::isfinite(value)) out << value;
@@ -173,18 +216,27 @@ bool requiredRecipePresent(const std::vector<std::string>& recipe)
 //                Functions
 // -----------------------------------------
 
-void set_init_end_status(const bool success, const std::string &msg)
+bool set_init_end_status(const bool success, const std::string &msg)
 {
-    init_status_ = 1;
-    init_success_ = success;
-    init_msg_ = msg;
+    std::string effective_message = msg;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        if (success && startup_phase == StartupPhase::FAILED)
+            return false;
+        if (!success && !startup_rtde_failure.empty() && startup_phase == StartupPhase::FAILED)
+            effective_message = startup_rtde_failure;
+        init_status_ = 1;
+        init_success_ = success;
+        init_msg_ = effective_message;
+        startup_phase = success ? StartupPhase::RUNNING : StartupPhase::FAILED;
+    }
 
     if (success)
-        return;
+        return true;
 
-    ros::requestShutdown();
     ros::waitForShutdown();
-    shutdown(msg);
+    shutdown(effective_message);
+    return true;
 }
 
 bool check_robot_mode(const urcl::RobotMode robot_mode)
@@ -267,7 +319,7 @@ void thread_handle_rtde()
             ROS_FATAL("Mandatory RTDE field missing in data package; stopping bridge");
             if (tcp_verifier_) tcp_verifier_->fail(tcp_verifier_->epoch(), "Mandatory RTDE field missing");
             cancel_required_.store(true);
-            ros::requestShutdown();
+            report_rtde_fatal("Mandatory RTDE field missing in data package");
             break;
         }
 
@@ -322,7 +374,7 @@ void thread_handle_rtde()
         cancel_required_.store(true);
         if (bridge_trace_recorder_)
             bridge_trace_recorder_->event("rtde_reader_failed", tcp_state_json(e.what()));
-        ros::requestShutdown();
+        report_rtde_fatal(std::string("RTDE reader failed: ") + e.what());
     }
     ROS_INFO("[handle_rtde]: Shutdown");
 }
@@ -421,7 +473,15 @@ void thread_configure_robot()
             if (result == TcpVerifier::WaitResult::VERIFIED)
             {
                 kinematics_manager_->markRobotConfigVerified();
-                ROS_INFO_STREAM("[TCP]: Controller readback verified for program epoch " << epoch);
+                BridgeRtdeSample verified_sample;
+                if (tcp_verifier_->snapshot(verified_sample))
+                    ROS_INFO_STREAM("[TCP]: Controller readback verified for program epoch " << epoch
+                        << " expected_tcp_offset=" << tcp_json(tcp_verifier_->expected())
+                        << " latest_rtde_tcp_offset=" << tcp_json(verified_sample.tcp_offset)
+                        << " latest_controller_timestamp=" << std::setprecision(17)
+                        << verified_sample.controller_timestamp << " (translation in m, rotation vector in rad)");
+                else
+                    ROS_WARN_STREAM("[TCP]: Verification succeeded without an RTDE snapshot for program epoch " << epoch);
                 if (bridge_trace_recorder_)
                     bridge_trace_recorder_->event("tcp_verified", tcp_state_json("two matching post-write RTDE samples"));
             }
@@ -468,20 +528,31 @@ void shutdown(std::string reason)
 
     if (ur_primary_)
     {
-        ur_primary_->commandStop();
-        ur_primary_->stop();
+        cleanup_step("primary commandStop", [] { ur_primary_->commandStop(); });
+        cleanup_step("primary stop", [] { ur_primary_->stop(); });
     }
 
     if (ur_dashboard_)
     {
-        ur_dashboard_->commandClearOperationalMode();
-        if (motor_off_on_shutdown_)
-            ur_dashboard_->commandPowerOff();
-        ur_dashboard_->disconnect();
+        if (!local_control_detected_at_startup)
+        {
+            cleanup_step("dashboard clear operational mode", [] {
+                if (!ur_dashboard_->commandClearOperationalMode())
+                    ROS_WARN("[Shutdown]: Dashboard did not clear operational mode");
+            });
+            if (motor_off_on_shutdown_)
+                cleanup_step("dashboard power off", [] {
+                    if (!ur_dashboard_->commandPowerOff())
+                        ROS_WARN("[Shutdown]: Dashboard did not confirm power off");
+                });
+        }
+        else
+            ROS_INFO("[Shutdown]: Skipping dashboard state commands after Local Control was detected at startup");
+        cleanup_step("dashboard disconnect", [] { ur_dashboard_->disconnect(); });
     }
 
     if (ur_driver_)
-        ur_driver_->stopControl();
+        cleanup_step("driver stopControl", [] { ur_driver_->stopControl(); });
 
     // Release every shared driver owner so URCL is destroyed while verifier
     // and recorder still exist. Its late program callbacks now return early.
@@ -595,16 +666,23 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res)
 {
-    res.status.data = init_status_;
-    res.result.data = init_success_ && motion_ready();
-    if (init_success_ && !res.result.data)
+    bool init_success;
+    std::string init_message;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        res.status.data = init_status_;
+        init_success = init_success_;
+        init_message = init_msg_;
+    }
+    res.result.data = init_success && motion_ready();
+    if (init_success && !res.result.data)
     {
         res.info.data = tcp_verifier_ && tcp_verifier_->isFault() ?
             "TCP verification failed: " + tcp_verifier_->faultReason() :
             "Robot program, TCP verification, or RTDE stream not ready";
     }
     else
-        res.info.data = init_msg_;
+        res.info.data = init_message;
     return true;
 }
 
@@ -1139,9 +1217,15 @@ int main(int argc, char **argv)
     speed_override_ = 1.0;
     name_space_ = nh_->getNamespace();
     motor_off_on_shutdown_ = true;
-    init_status_ = 0;
-    init_success_ = false;
-    init_msg_ = "";
+    local_control_detected_at_startup = false;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        init_status_ = 0;
+        init_success_ = false;
+        init_msg_.clear();
+        startup_phase = StartupPhase::STARTING;
+        startup_rtde_failure.clear();
+    }
 
     // Start service for init feedback
     ros::ServiceServer check_hardware_status_srv = nh_->advertiseService<rpwc_msgs::checkHardwareStatus::RequestType, rpwc_msgs::checkHardwareStatus::ResponseType>("check_hardware_status", &callback_check_hardware_status);
@@ -1237,6 +1321,7 @@ int main(int argc, char **argv)
     {
         if (!ur_dashboard_->commandIsInRemoteControl())
         {
+            local_control_detected_at_startup = true;
             ROS_ERROR("Robot controller must be in 'remote control' mode for this driver to work");
             set_init_end_status(false, "Robot controller must be in 'remote control' mode for this driver to work");
             return 1;
@@ -1375,6 +1460,8 @@ int main(int argc, char **argv)
         set_init_end_status(false, std::string("Invalid controller TCP configuration: ") + e.what());
         return 1;
     }
+    ROS_INFO_STREAM("[TCP]: Expected controller tcp_offset=" << tcp_json(tcp_verifier_->expected())
+        << " (translation in m, rotation vector in rad; after URCL serialization quantization)");
 
     // Both RPWC and this bridge resolve the same mounted ROS package directory.
     const std::string rpwc_path = ros::package::getPath("rpwc");
@@ -1449,15 +1536,16 @@ int main(int argc, char **argv)
     // Wait for program start — state manager handles recovery and shutdown on failure
     const auto startup_deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(static_cast<int>(startup_tcp_timeout_s * 1000.0));
-    while (!robot_state_manager_->isReady() && ros::ok() &&
+    while (!robot_state_manager_->isReady() && ros::ok() && pending_rtde_failure().empty() &&
            std::chrono::steady_clock::now() < startup_deadline)
         ros::Duration(0.05).sleep();
 
-    if (!ros::ok() || !robot_state_manager_->isReady())
+    if (!ros::ok() || !robot_state_manager_->isReady() || !pending_rtde_failure().empty())
     {
-        const std::string message = "Program or RTDE did not become ready before startup timeout";
+        const std::string rtde_error = pending_rtde_failure();
+        const std::string message = rtde_error.empty() ?
+            "Program or RTDE did not become ready before startup timeout" : rtde_error;
         ROS_FATAL_STREAM(message);
-        ros::requestShutdown();
         set_init_end_status(false, message);
         return 1;
     }
@@ -1465,15 +1553,16 @@ int main(int argc, char **argv)
     // The configuration worker applies TCP/payload and confirms the active TCP
     // from fresh controller RTDE packets before any motion action is advertised.
     while (ros::ok() && !motion_ready() && !tcp_verifier_->isFault() &&
+           pending_rtde_failure().empty() &&
            std::chrono::steady_clock::now() < startup_deadline)
         ros::Duration(0.05).sleep();
-    if (!ros::ok() || !motion_ready())
+    if (!ros::ok() || !motion_ready() || !pending_rtde_failure().empty())
     {
-        const std::string message = tcp_verifier_->isFault() ?
-            "TCP verification failed: " + tcp_verifier_->faultReason() :
-            "TCP was not verified before startup timeout";
+        const std::string rtde_error = pending_rtde_failure();
+        const std::string message = !rtde_error.empty() ? rtde_error :
+            (tcp_verifier_->isFault() ? "TCP verification failed: " + tcp_verifier_->faultReason() :
+            "TCP was not verified before startup timeout");
         ROS_FATAL_STREAM(message);
-        ros::requestShutdown();
         set_init_end_status(false, message);
         return 1;
     }
@@ -1502,7 +1591,12 @@ int main(int argc, char **argv)
 
     ROS_INFO("start");
     keep_alive_thread_ = std::thread(&thread_keep_alive);
-    set_init_end_status(true, "Node started");
+    if (!set_init_end_status(true, "Node started"))
+    {
+        const std::string rtde_error = pending_rtde_failure();
+        set_init_end_status(false, rtde_error.empty() ? "RTDE reader failed during startup" : rtde_error);
+        return 1;
+    }
     ros::waitForShutdown();
 
     ROS_INFO("Exiting");

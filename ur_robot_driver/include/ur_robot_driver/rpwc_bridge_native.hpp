@@ -63,7 +63,7 @@ typedef actionlib::SimpleActionServer<rpwc_msgs::nativeJointsCommandsAction> Joi
 //                Functions
 // -----------------------------------------
 
-void set_init_end_status(const bool success, const std::string &msg);
+bool set_init_end_status(const bool success, const std::string &msg);
 bool check_robot_mode(const urcl::RobotMode robot_mode);
 bool check_safety_mode(const urcl::SafetyMode safety_mode);
 
