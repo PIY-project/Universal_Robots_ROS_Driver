@@ -1,20 +1,153 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iterator>
+#include <sstream>
+
+namespace
+{
+enum class StartupPhase { STARTING, RUNNING, FAILED };
+std::mutex startup_state_mutex;
+StartupPhase startup_phase = StartupPhase::STARTING;
+std::string startup_rtde_failure;
+bool local_control_detected_at_startup = false;
+
+std::string pending_rtde_failure()
+{
+    std::lock_guard<std::mutex> lock(startup_state_mutex);
+    return startup_rtde_failure;
+}
+
+void report_rtde_fatal(const std::string& reason)
+{
+    bool shutdown_running_bridge = false;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        if (startup_phase == StartupPhase::STARTING)
+        {
+            startup_rtde_failure = reason;
+            startup_phase = StartupPhase::FAILED;
+        }
+        else if (startup_phase == StartupPhase::RUNNING)
+            shutdown_running_bridge = true;
+    }
+    if (shutdown_running_bridge)
+        ros::requestShutdown();
+}
+
+template <class F>
+void cleanup_step(const char* name, F&& operation)
+{
+    try { operation(); }
+    catch (const std::exception& e)
+    {
+        ROS_ERROR_STREAM("[Shutdown]: " << name << " failed: " << e.what());
+    }
+    catch (...)
+    {
+        ROS_ERROR_STREAM("[Shutdown]: " << name << " failed with an unknown exception");
+    }
+}
+
+std::string format_tcp(const BridgeRtdeSample::Vector6& tcp)
+{
+    std::ostringstream out;
+    out << std::setprecision(17) << '[';
+    for (std::size_t i = 0; i < tcp.size(); ++i)
+    {
+        if (i) out << ',';
+        out << tcp[i];
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string format_tcp_state(const std::string& reason)
+{
+    std::ostringstream out;
+    out << reason;
+    if (tcp_verifier_)
+    {
+        out << "; expected=" << format_tcp(tcp_verifier_->expected())
+            << "; epoch=" << tcp_verifier_->epoch()
+            << "; sequence=" << tcp_verifier_->sequence();
+        BridgeRtdeSample sample;
+        if (tcp_verifier_->snapshot(sample))
+            out << "; latest=" << format_tcp(sample.tcp_offset)
+                << "; controller_timestamp=" << std::setprecision(17)
+                << sample.controller_timestamp;
+    }
+    return out.str();
+}
+
+template <class T>
+bool finite_vector(const std::vector<T>& values)
+{
+    return std::all_of(values.begin(), values.end(),
+        [](const T& value) { return std::isfinite(static_cast<double>(value)); });
+}
+
+bool finite_pose(const geometry_msgs::Pose& pose)
+{
+    const double values[] = {pose.position.x, pose.position.y, pose.position.z,
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
+    return std::all_of(std::begin(values), std::end(values),
+        [](double value) { return std::isfinite(value); });
+}
+
+class MotionGoalScope
+{
+public:
+    MotionGoalScope() = default;
+    MotionGoalScope(const MotionGoalScope&) = delete;
+    MotionGoalScope& operator=(const MotionGoalScope&) = delete;
+    ~MotionGoalScope() { active_motion_goal_.store(false); }
+};
+
+bool requiredRecipePresent(const std::vector<std::string>& recipe)
+{
+    static const char* fields[] = {"timestamp", "actual_q", "actual_qd",
+        "tcp_offset", "runtime_state",
+        "robot_mode", "safety_mode", "actual_digital_input_bits", "actual_digital_output_bits"};
+    for (const char* field : fields)
+    {
+        if (std::find(recipe.begin(), recipe.end(), field) == recipe.end())
+        {
+            ROS_FATAL_STREAM("Required RTDE output missing after recipe negotiation: " << field);
+            return false;
+        }
+    }
+    return true;
+}
+}
+
 // -----------------------------------------
 //                Functions
 // -----------------------------------------
 
-void set_init_end_status(const bool success, const std::string &msg)
+bool set_init_end_status(const bool success, const std::string &msg)
 {
-    init_status_ = 1;
-    init_success_ = success;
-    init_msg_ = msg;
+    std::string effective_message = msg;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        if (success && startup_phase == StartupPhase::FAILED)
+            return false;
+        if (!success && !startup_rtde_failure.empty() && startup_phase == StartupPhase::FAILED)
+            effective_message = startup_rtde_failure;
+        init_status_ = 1;
+        init_success_ = success;
+        init_msg_ = effective_message;
+        startup_phase = success ? StartupPhase::RUNNING : StartupPhase::FAILED;
+    }
 
     if (success)
-        return;
+        return true;
 
     ros::waitForShutdown();
-    shutdown(msg);
+    shutdown(effective_message);
+    return true;
 }
 
 bool check_robot_mode(const urcl::RobotMode robot_mode)
@@ -51,58 +184,100 @@ bool check_safety_mode(const urcl::SafetyMode safety_mode)
 
 void thread_handle_rtde()
 {
+    try
+    {
     ROS_INFO("[handle_rtde]: Init");
     ros::Rate rate(freq_rtde_hz_);
-    std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg{new urcl::rtde_interface::DataPackage(ur_driver_->getRTDEOutputRecipe())};
+    urcl::rtde_interface::DataPackage data_pkg(ur_driver_->getRTDEOutputRecipe());
 
     ROS_INFO("[handle_rtde]: Start");
-    ur_driver_->startRTDECommunication(false);
+    // Background RTDE reading makes getDataPackage() bounded (0/100 ms in
+    // this URCL), allowing the reader to stop before driver teardown.
+    ur_driver_->startRTDECommunication(true);
 
-    while (ros::ok())
+    while (bridge_threads_running_.load() && ros::ok())
     {
-        if (!ur_driver_->getDataPackageBlocking(data_pkg))
+        if (!ur_driver_->getDataPackage(data_pkg))
         {
+            if (tcp_verifier_ && tcp_verifier_->onNoPackage())
+            {
+                ROS_ERROR("[TCP]: RTDE stream stale; motion blocked until reconfiguration");
+                if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+                cancel_required_.store(true);
+            }
             rate.sleep();
             continue;
         }
 
-        // Robot joints data
+        BridgeRtdeSample sample;
+        std::uint64_t in_bits = 0, out_bits = 0;
+        const bool complete = data_pkg.getData<double>("timestamp", sample.controller_timestamp) &&
+            data_pkg.getData<urcl::vector6d_t>("actual_q", sample.actual_q) &&
+            data_pkg.getData<urcl::vector6d_t>("actual_qd", sample.actual_qd) &&
+            data_pkg.getData<urcl::vector6d_t>("tcp_offset", sample.tcp_offset) &&
+            data_pkg.getData<uint32_t>("runtime_state", sample.runtime_state) &&
+            data_pkg.getData<int32_t>("robot_mode", sample.robot_mode) &&
+            data_pkg.getData<int32_t>("safety_mode", sample.safety_mode) &&
+            data_pkg.getData<std::uint64_t>("actual_digital_input_bits", in_bits) &&
+            data_pkg.getData<std::uint64_t>("actual_digital_output_bits", out_bits);
+        if (!complete)
         {
-            urcl::vector6d_t joints, vels;
-            data_pkg->getData<urcl::vector6d_t>("actual_q", joints);
-            data_pkg->getData<urcl::vector6d_t>("actual_qd", vels);
-            kinematics_manager_->updateRtdeJointData(joints, vels);
+            ROS_FATAL("Mandatory RTDE field missing in data package; stopping bridge");
+            if (tcp_verifier_) tcp_verifier_->fail(tcp_verifier_->epoch(), "Mandatory RTDE field missing");
+            cancel_required_.store(true);
+            report_rtde_fatal("Mandatory RTDE field missing in data package");
+            break;
         }
 
-        // IO signals data
+        const auto event = tcp_verifier_->observe(sample);
+        if (event == TcpVerifier::Event::DUPLICATE_SAMPLE)
+            continue;
+        if (event == TcpVerifier::Event::INVALID_SAMPLE)
         {
-            std::uint64_t in_bits, out_bits;
-            data_pkg->getData<std::uint64_t>("actual_digital_input_bits", in_bits);
-            data_pkg->getData<std::uint64_t>("actual_digital_output_bits", out_bits);
-            io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
-            io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
+            ROS_ERROR("Invalid RTDE controller timestamp; motion blocked");
+            cancel_required_.store(true);
+            continue;
         }
 
-        // Runtime state
+        kinematics_manager_->updateRtdeJointData(sample.actual_q, sample.actual_qd);
+
+        io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
+        io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
+        robot_state_manager_->updateRtdeState(sample.runtime_state, sample.robot_mode, sample.safety_mode);
+
+        if (event != TcpVerifier::Event::NONE)
         {
-            uint32_t rt_state = 0;
-            int32_t robot_mode = 0, safety_mode = 0;
-            data_pkg->getData<uint32_t>("runtime_state", rt_state);
-            data_pkg->getData<int32_t>("robot_mode", robot_mode);
-            data_pkg->getData<int32_t>("safety_mode", safety_mode);
-            robot_state_manager_->updateRtdeState(rt_state, robot_mode, safety_mode);
+            const char* name = event == TcpVerifier::Event::PROGRAM_STARTED ? "program_started" :
+                               event == TcpVerifier::Event::PROGRAM_STOPPED ? "program_stopped" :
+                               event == TcpVerifier::Event::TIMESTAMP_RESET ? "controller_timestamp_reset" :
+                               "tcp_changed";
+            ROS_WARN_STREAM("[TCP]: " << format_tcp_state(name));
+            if (event != TcpVerifier::Event::PROGRAM_STARTED)
+            {
+                kinematics_manager_->invalidateRobotConfig();
+                cancel_required_.store(true);
+            }
         }
 
         rate.sleep();
     }
 
+    }
+    catch (const std::exception& e)
+    {
+        ROS_FATAL_STREAM("[handle_rtde]: RTDE reader failed: " << e.what());
+        if (tcp_verifier_) tcp_verifier_->fail(tcp_verifier_->epoch(), e.what());
+        if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+        cancel_required_.store(true);
+        report_rtde_fatal(std::string("RTDE reader failed: ") + e.what());
+    }
     ROS_INFO("[handle_rtde]: Shutdown");
 }
 
 void thread_keep_alive()
 {
     ros::Rate rate(freq_rtde_hz_);
-    while (ros::ok())
+    while (bridge_threads_running_.load() && ros::ok())
     {
         if (!robot_state_manager_ || !robot_state_manager_->isReady())
         {
@@ -125,13 +300,109 @@ void thread_keep_alive()
 
 void handleRobotProgramState(bool program_running)
 {
+    std::lock_guard<std::mutex> callback_lock(program_callback_mutex_);
+    if (!program_callback_enabled_) return;
+    ur_program_connected_.store(program_running);
+    if (!program_running && tcp_verifier_)
+    {
+        tcp_verifier_->onProgramDisconnected();
+        if (kinematics_manager_) kinematics_manager_->invalidateRobotConfig();
+        cancel_required_.store(true);
+    }
     if (robot_state_manager_)
         robot_state_manager_->onProgramStateChanged(program_running);
+}
+
+bool motion_ready()
+{
+    return ur_program_connected_.load() && robot_state_manager_ && robot_state_manager_->isReady() &&
+           tcp_verifier_ && tcp_verifier_->motionReady() &&
+           kinematics_manager_ && kinematics_manager_->isRobotConfigVerified();
+}
+
+void thread_configure_robot()
+{
+    while (config_worker_running_.load() && ros::ok())
+    {
+        // Independent freshness watch also covers a stalled RTDE background reader.
+        if (tcp_verifier_->onNoPackage())
+        {
+            kinematics_manager_->invalidateRobotConfig();
+            cancel_required_.store(true);
+            ROS_ERROR("[TCP]: RTDE watchdog expired; motion blocked");
+        }
+        if (cancel_required_.exchange(false) && ur_instruction_executor_)
+            ur_instruction_executor_->cancelMotion();
+
+        if (!ur_program_connected_.load() || !robot_state_manager_ ||
+            !robot_state_manager_->isReady() || !tcp_verifier_->programRunning())
+        {
+            tcp_verifier_->waitForChange(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        const std::uint64_t epoch = tcp_verifier_->claimPendingEpoch();
+        if (!epoch)
+        {
+            tcp_verifier_->waitForChange(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        ROS_INFO_STREAM("[TCP]: Applying TCP and payload for program epoch " << epoch);
+        try
+        {
+            kinematics_manager_->applyRobotConfig();
+            const std::uint64_t after_sequence = tcp_verifier_->sequence();
+            if (!tcp_verifier_->beginVerification(epoch, after_sequence))
+                continue;
+
+            const auto result = tcp_verifier_->waitForVerification(epoch,
+                std::chrono::milliseconds(static_cast<int>(tcp_verification_timeout_s_ * 1000.0)));
+            if (result == TcpVerifier::WaitResult::VERIFIED)
+            {
+                kinematics_manager_->markRobotConfigVerified();
+                BridgeRtdeSample verified_sample;
+                if (tcp_verifier_->snapshot(verified_sample))
+                    ROS_INFO_STREAM("[TCP]: Controller readback verified for program epoch " << epoch
+                        << " expected_tcp_offset=" << format_tcp(tcp_verifier_->expected())
+                        << " latest_rtde_tcp_offset=" << format_tcp(verified_sample.tcp_offset)
+                        << " latest_controller_timestamp=" << std::setprecision(17)
+                        << verified_sample.controller_timestamp << " (translation in m, rotation vector in rad)");
+                else
+                    ROS_WARN_STREAM("[TCP]: Verification succeeded without an RTDE snapshot for program epoch " << epoch);
+            }
+            else if (result == TcpVerifier::WaitResult::TIMEOUT)
+            {
+                tcp_verifier_->fail(epoch, "TCP readback did not match before timeout");
+                ROS_ERROR_STREAM("[TCP]: Verification failed: "
+                    << format_tcp_state(tcp_verifier_->faultReason()));
+            }
+        }
+        catch (const std::exception& e)
+        {
+            tcp_verifier_->fail(epoch, e.what());
+            ROS_ERROR_STREAM("[TCP]: Configuration failed: " << e.what());
+        }
+    }
 }
 
 void shutdown(std::string reason)
 {
     ROS_WARN_STREAM("Shutting down node, reason: " << reason);
+    ros::requestShutdown();
+    if (spinner_) spinner_->stop();
+    bridge_threads_running_.store(false);
+    config_worker_running_.store(false);
+    if (config_thread_.joinable()) config_thread_.join();
+    if (rtde_thread_.joinable()) rtde_thread_.join();
+    if (keep_alive_thread_.joinable()) keep_alive_thread_.join();
+    if (robot_state_manager_) robot_state_manager_->stop();
+    // Drain any in-flight URCL callback before dashboard or driver teardown.
+    {
+        std::lock_guard<std::mutex> callback_lock(program_callback_mutex_);
+        program_callback_enabled_ = false;
+        ur_program_connected_.store(false);
+    }
     if (nh_ != nullptr)
     {
         motor_off_on_shutdown_ = nh_->param("motor_off_for_deactivation", true);
@@ -140,20 +411,42 @@ void shutdown(std::string reason)
 
     if (ur_primary_)
     {
-        ur_primary_->commandStop();
-        ur_primary_->stop();
+        cleanup_step("primary commandStop", [] { ur_primary_->commandStop(); });
+        cleanup_step("primary stop", [] { ur_primary_->stop(); });
     }
 
     if (ur_dashboard_)
     {
-        ur_dashboard_->commandClearOperationalMode();
-        if (motor_off_on_shutdown_)
-            ur_dashboard_->commandPowerOff();
-        ur_dashboard_->disconnect();
+        if (!local_control_detected_at_startup)
+        {
+            cleanup_step("dashboard clear operational mode", [] {
+                if (!ur_dashboard_->commandClearOperationalMode())
+                    ROS_WARN("[Shutdown]: Dashboard did not clear operational mode");
+            });
+            if (motor_off_on_shutdown_)
+                cleanup_step("dashboard power off", [] {
+                    if (!ur_dashboard_->commandPowerOff())
+                        ROS_WARN("[Shutdown]: Dashboard did not confirm power off");
+                });
+        }
+        else
+            ROS_INFO("[Shutdown]: Skipping dashboard state commands after Local Control was detected at startup");
+        cleanup_step("dashboard disconnect", [] { ur_dashboard_->disconnect(); });
     }
 
     if (ur_driver_)
-        ur_driver_->stopControl();
+        cleanup_step("driver stopControl", [] { ur_driver_->stopControl(); });
+
+    // Release every shared driver owner before destroying the verifier.
+    // Late URCL program callbacks now return early.
+    robot_state_manager_.reset();
+    io_manager_.reset();
+    kinematics_manager_.reset();
+    ur_instruction_executor_.reset();
+    ur_primary_.reset();
+    ur_driver_.reset();
+    tcp_verifier_.reset();
+    ur_dashboard_.reset();
 
     ur_driver::unregisterUrclLogHandler();
     urcl::setLogLevel(urcl::LogLevel::INFO);
@@ -161,10 +454,12 @@ void shutdown(std::string reason)
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
 {
-    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    if (!motion_ready())
         return false;
 
     std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
+    if (!motion_ready())
+        return false;
     return ur_instruction_executor_->executeMotion(waypoints);
 }
 
@@ -220,9 +515,23 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res)
 {
-    res.status.data = init_status_;
-    res.result.data = init_success_;
-    res.info.data = init_msg_;
+    bool init_success;
+    std::string init_message;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        res.status.data = init_status_;
+        init_success = init_success_;
+        init_message = init_msg_;
+    }
+    res.result.data = init_success && motion_ready();
+    if (init_success && !res.result.data)
+    {
+        res.info.data = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() :
+            "Robot program, TCP verification, or RTDE stream not ready";
+    }
+    else
+        res.info.data = init_message;
     return true;
 }
 
@@ -373,10 +682,11 @@ CartesianMove::~CartesianMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeCartesianCommandsResult result;
+        result.success = false;
+        result.error_code = 9;
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -384,7 +694,23 @@ CartesianMove::~CartesianMove(void)
 void CartesianMove::goal_callback()
 {
     ROS_INFO("[Cartesian Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto rpwc_goal = as.acceptNewGoal();
+    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
+    if (active_motion_goal_.exchange(true))
+    {
+        // SimpleActionServer may already have preempted the previous action
+        // when acceptNewGoal() returned. Stop its physical motion before
+        // rejecting this overlapping goal.
+        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+            robot_state_manager_ && !robot_state_manager_->forceProgramStop())
+            ROS_FATAL("[Cartesian Move]: Could not confirm cancellation of overlapping motion");
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Another robot motion is active";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    MotionGoalScope motion_goal_scope;
 
     if (!robot_state_manager_ || !robot_state_manager_->isReady())
     {
@@ -401,7 +727,7 @@ void CartesianMove::goal_callback()
             }
         }
 
-        if (!robot_state_manager_->isReady())
+        if (!robot_state_manager_ || !robot_state_manager_->isReady())
         {
             ROS_WARN("[Cartesian Move]: Robot program not ready, aborting goal");
             rpwc_result.success = false;
@@ -412,15 +738,37 @@ void CartesianMove::goal_callback()
         }
     }
 
-    long unsigned int len = rpwc_goal->Poses.size();
-    if (rpwc_goal->types.size() < len)
-        len = rpwc_goal->types.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    if (!motion_ready())
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() : "TCP not verified or RTDE stale";
+        ROS_WARN_STREAM("[TCP]: Cartesian goal rejected: " << format_tcp_state(rpwc_result.msg));
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+
+    const std::size_t len = rpwc_goal->Poses.size();
+    if (rpwc_goal->types.size() != len || rpwc_goal->velocities.size() != len ||
+        rpwc_goal->accelerations.size() != len || rpwc_goal->zone_radiuses.size() != len)
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Cartesian goal array lengths differ";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    if (!finite_vector(rpwc_goal->velocities) || !finite_vector(rpwc_goal->accelerations) ||
+        !finite_vector(rpwc_goal->zone_radiuses) ||
+        !std::all_of(rpwc_goal->Poses.begin(), rpwc_goal->Poses.end(), finite_pose))
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Cartesian goal contains nonfinite values";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
 
     ROS_INFO_STREAM("[Cartesian Move]: Max valid poses: " << len);
     if (len == 0)
@@ -478,7 +826,11 @@ void CartesianMove::preempt_callback()
         {
             ROS_ERROR("[Cartesian Move]: Failed to force-stop robot program, falling back to cancelMotion");
             ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            rpwc_msgs::nativeCartesianCommandsResult result;
+            result.success = false;
+            result.error_code = 9;
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            as.setAborted(result, result.msg);
         }
     }
     else
@@ -501,10 +853,11 @@ JointsMove::~JointsMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeJointsCommandsResult result;
+        result.success = false;
+        result.error_code = 9;
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -512,7 +865,20 @@ JointsMove::~JointsMove(void)
 void JointsMove::goal_callback()
 {
     ROS_INFO("[Joints Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto rpwc_goal = as.acceptNewGoal();
+    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
+    if (active_motion_goal_.exchange(true))
+    {
+        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+            robot_state_manager_ && !robot_state_manager_->forceProgramStop())
+            ROS_FATAL("[Joints Move]: Could not confirm cancellation of overlapping motion");
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Another robot motion is active";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    MotionGoalScope motion_goal_scope;
 
     if (!robot_state_manager_ || !robot_state_manager_->isReady())
     {
@@ -529,7 +895,7 @@ void JointsMove::goal_callback()
             }
         }
 
-        if (!robot_state_manager_->isReady())
+        if (!robot_state_manager_ || !robot_state_manager_->isReady())
         {
             ROS_WARN("[Joints Move]: Robot program not ready, aborting goal");
             rpwc_result.success = false;
@@ -540,13 +906,36 @@ void JointsMove::goal_callback()
         }
     }
 
-    long unsigned int len = rpwc_goal->targets.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    if (!motion_ready())
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = tcp_verifier_ && tcp_verifier_->isFault() ?
+            "TCP verification failed: " + tcp_verifier_->faultReason() : "TCP not verified or RTDE stale";
+        ROS_WARN_STREAM("[TCP]: Joint goal rejected: " << format_tcp_state(rpwc_result.msg));
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+
+    const std::size_t len = rpwc_goal->targets.size();
+    if (rpwc_goal->velocities.size() != len || rpwc_goal->accelerations.size() != len ||
+        rpwc_goal->zone_radiuses.size() != len)
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Joint goal array lengths differ";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
+    if (!finite_vector(rpwc_goal->velocities) || !finite_vector(rpwc_goal->accelerations) ||
+        !finite_vector(rpwc_goal->zone_radiuses))
+    {
+        rpwc_result.success = false;
+        rpwc_result.error_code = 9;
+        rpwc_result.msg = "Joint goal contains nonfinite speed or blend values";
+        as.setAborted(rpwc_result, rpwc_result.msg);
+        return;
+    }
 
     ROS_INFO_STREAM("[Joints Move]: Max valid poses: " << len);
     if (len == 0)
@@ -564,6 +953,22 @@ void JointsMove::goal_callback()
     tmpWaypoint.resize(kinematics_manager_->getNumJoints());
     for (auto it = rpwc_goal->targets.begin(); it != rpwc_goal->targets.end(); it++)
     {
+        if (it->values.size() != static_cast<std::size_t>(kinematics_manager_->getNumJoints()))
+        {
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Joint goal has incorrect joint count";
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
+        if (!finite_vector(it->values))
+        {
+            rpwc_result.success = false;
+            rpwc_result.error_code = 9;
+            rpwc_result.msg = "Joint goal contains nonfinite target";
+            as.setAborted(rpwc_result, rpwc_result.msg);
+            return;
+        }
         for (int i = 0; i < kinematics_manager_->getNumJoints(); i++)
         {
             tmpWaypoint(i) = it->values[i];
@@ -603,7 +1008,11 @@ void JointsMove::preempt_callback()
         {
             ROS_ERROR("[Joints Move]: Failed to force-stop robot program, falling back to cancelMotion");
             ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            rpwc_msgs::nativeJointsCommandsResult result;
+            result.success = false;
+            result.error_code = 9;
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            as.setAborted(result, result.msg);
         }
     }
     else
@@ -621,8 +1030,8 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "rpwc_ur_bridge_native");
     nh_ = new ros::NodeHandle();
-    ros::AsyncSpinner spinner(4);
-    spinner.start();
+    spinner_.reset(new ros::AsyncSpinner(4));
+    spinner_->start();
 
     // Set default 
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
@@ -640,9 +1049,15 @@ int main(int argc, char **argv)
     speed_override_ = 1.0;
     name_space_ = nh_->getNamespace();
     motor_off_on_shutdown_ = true;
-    init_status_ = 0;
-    init_success_ = false;
-    init_msg_ = "";
+    local_control_detected_at_startup = false;
+    {
+        std::lock_guard<std::mutex> lock(startup_state_mutex);
+        init_status_ = 0;
+        init_success_ = false;
+        init_msg_.clear();
+        startup_phase = StartupPhase::STARTING;
+        startup_rtde_failure.clear();
+    }
 
     // Start service for init feedback
     ros::ServiceServer check_hardware_status_srv = nh_->advertiseService<rpwc_msgs::checkHardwareStatus::RequestType, rpwc_msgs::checkHardwareStatus::ResponseType>("check_hardware_status", &callback_check_hardware_status);
@@ -698,6 +1113,18 @@ int main(int argc, char **argv)
     }
 
     nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
+    nh_->param<double>("tcp_verification_timeout_s", tcp_verification_timeout_s_, 2.0);
+    double startup_tcp_timeout_s = 20.0;
+    nh_->param<double>("startup_tcp_timeout_s", startup_tcp_timeout_s, startup_tcp_timeout_s);
+    if (!std::isfinite(freq_rtde_hz_) || freq_rtde_hz_ <= 0.0 ||
+        !std::isfinite(tcp_verification_timeout_s_) || tcp_verification_timeout_s_ <= 0.0 ||
+        !std::isfinite(startup_tcp_timeout_s) || startup_tcp_timeout_s <= 0.0 ||
+        !std::isfinite(max_speed_linear_) || !std::isfinite(max_acceleration_linear_) ||
+        !std::isfinite(max_speed_joint_) || !std::isfinite(max_acceleration_joint_))
+    {
+        set_init_end_status(false, "Invalid RTDE, TCP verification, or motion scale parameter");
+        return 1;
+    }
 
     bool auto_recover_protective_stop;
     double recovery_timeout_s;
@@ -726,6 +1153,7 @@ int main(int argc, char **argv)
     {
         if (!ur_dashboard_->commandIsInRemoteControl())
         {
+            local_control_detected_at_startup = true;
             ROS_ERROR("Robot controller must be in 'remote control' mode for this driver to work");
             set_init_end_status(false, "Robot controller must be in 'remote control' mode for this driver to work");
             return 1;
@@ -819,8 +1247,22 @@ int main(int argc, char **argv)
     urDriverConfig.headless_mode = true;
     urDriverConfig.handle_program_state = &handleRobotProgramState;
 
-    ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
-    ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
+    try
+    {
+        ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
+        ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file,
+            urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
+    }
+    catch (const std::exception& e)
+    {
+        set_init_end_status(false, std::string("UR driver or RTDE initialization failed: ") + e.what());
+        return 1;
+    }
+    if (!requiredRecipePresent(ur_driver_->getRTDEOutputRecipe()))
+    {
+        set_init_end_status(false, "Required RTDE fields unavailable");
+        return 1;
+    }
     ROS_INFO_STREAM("ControlFrequency: " << ur_driver_->getControlFrequency());
 
     // Init IO Manager
@@ -828,26 +1270,39 @@ int main(int argc, char **argv)
     ros::param::get("io_signals_names_path", io_json_path);
     io_manager_.reset(new IOManager(*nh_, ur_driver_, io_json_path));
 
+    // Build KDL and the expected controller TCP before RTDE can deliver a packet.
+    try
+    {
+        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
+    }
+    catch (const std::exception &e)
+    {
+        set_init_end_status(false, e.what());
+        return 1;
+    }
+    const auto expected = kinematics_manager_->expectedTcpOffset();
+    const double max_age_seconds = std::max(0.25, 5.0 / freq_rtde_hz_);
+    try
+    {
+        tcp_verifier_.reset(new TcpVerifier(expected,
+            std::chrono::milliseconds(static_cast<int>(max_age_seconds * 1000.0))));
+    }
+    catch (const std::exception& e)
+    {
+        set_init_end_status(false, std::string("Invalid controller TCP configuration: ") + e.what());
+        return 1;
+    }
+    ROS_INFO_STREAM("[TCP]: Expected controller tcp_offset=" << format_tcp(tcp_verifier_->expected())
+        << " (translation in m, rotation vector in rad; after URCL serialization quantization)");
+
     // Init Robot State Manager
     robot_state_manager_.reset(new RobotStateManager(*nh_, ur_driver_, ur_dashboard_, auto_recover_protective_stop, recovery_timeout_s, recovery_retries));
     robot_state_manager_->setOnBlockedCallback([]() {
         if (ur_instruction_executor_)
             ur_instruction_executor_->cancelMotion();
     });
-    robot_state_manager_->setOnProgramRestartedCallback([]() {
-        if (!kinematics_manager_)
-            return;
-        try
-        {
-            kinematics_manager_->applyRobotConfig();
-        }
-        catch (const std::exception &e)
-        {
-            ROS_ERROR_STREAM("[ProgramRestarted]: Failed to reapply TCP/payload config: " << e.what());
-        }
-    });
-
-    std::thread rtde_thread{&thread_handle_rtde};
+    bridge_threads_running_.store(true);
+    rtde_thread_ = std::thread(&thread_handle_rtde);
     robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
@@ -865,34 +1320,39 @@ int main(int argc, char **argv)
     ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
     ur_primary_ = ur_driver_->getPrimaryClient();
 
-    // Init Kinematics Manager (parses URDF, builds KDL chains, sets TCP offset)
-    try
-    {
-        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
-    }
-    catch (const std::exception &e)
-    {
-        set_init_end_status(false, e.what());
-        return 1;
-    }
+    config_worker_running_.store(true);
+    config_thread_ = std::thread(&thread_configure_robot);
     // Wait for program start — state manager handles recovery and shutdown on failure
-    while (!robot_state_manager_->isReady() && ros::ok())
+    const auto startup_deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<int>(startup_tcp_timeout_s * 1000.0));
+    while (!robot_state_manager_->isReady() && ros::ok() && pending_rtde_failure().empty() &&
+           std::chrono::steady_clock::now() < startup_deadline)
         ros::Duration(0.05).sleep();
 
-    if (!ros::ok())
+    if (!ros::ok() || !robot_state_manager_->isReady() || !pending_rtde_failure().empty())
     {
-        set_init_end_status(false, "Program start failed");
+        const std::string rtde_error = pending_rtde_failure();
+        const std::string message = rtde_error.empty() ?
+            "Program or RTDE did not become ready before startup timeout" : rtde_error;
+        ROS_FATAL_STREAM(message);
+        set_init_end_status(false, message);
         return 1;
     }
 
-    // Apply robot configuration (TCP offset + payload) and start KM threads
-    try
+    // The configuration worker applies TCP/payload and confirms the active TCP
+    // from fresh controller RTDE packets before any motion action is advertised.
+    while (ros::ok() && !motion_ready() && !tcp_verifier_->isFault() &&
+           pending_rtde_failure().empty() &&
+           std::chrono::steady_clock::now() < startup_deadline)
+        ros::Duration(0.05).sleep();
+    if (!ros::ok() || !motion_ready() || !pending_rtde_failure().empty())
     {
-        kinematics_manager_->applyRobotConfig();
-    }
-    catch (const std::exception &e)
-    {
-        set_init_end_status(false, e.what());
+        const std::string rtde_error = pending_rtde_failure();
+        const std::string message = !rtde_error.empty() ? rtde_error :
+            (tcp_verifier_->isFault() ? "TCP verification failed: " + tcp_verifier_->faultReason() :
+            "TCP was not verified before startup timeout");
+        ROS_FATAL_STREAM(message);
+        set_init_end_status(false, message);
         return 1;
     }
     kinematics_manager_->start(freq_rtde_hz_);
@@ -919,12 +1379,16 @@ int main(int argc, char **argv)
     JointsMove joint_act_srv("native_joints_commands");
 
     ROS_INFO("start");
-    std::thread keep_alive(&thread_keep_alive);
-    set_init_end_status(true, "Node started");
+    keep_alive_thread_ = std::thread(&thread_keep_alive);
+    if (!set_init_end_status(true, "Node started"))
+    {
+        const std::string rtde_error = pending_rtde_failure();
+        set_init_end_status(false, rtde_error.empty() ? "RTDE reader failed during startup" : rtde_error);
+        return 1;
+    }
     ros::waitForShutdown();
 
     ROS_INFO("Exiting");
-    spinner.stop();
     shutdown("Node shutdown");
     return 0;
 }

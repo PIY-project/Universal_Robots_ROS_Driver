@@ -65,6 +65,14 @@ public:
      */
     void applyRobotConfig();
 
+    /** Marks the sent TCP configuration applied only after controller readback. */
+    void markRobotConfigVerified() { config_applied_.store(true); }
+    void invalidateRobotConfig() { config_applied_.store(false); }
+    bool isRobotConfigVerified() const { return config_applied_.load(); }
+
+    /** The flange-to-TCP pose sent to the UR controller, in m and rotation-vector rad. */
+    urcl::vector6d_t expectedTcpOffset() const { return tcp_offs_; }
+
     /**
      * @brief Starts the joint-state and pose publisher threads and advertises services.
      *
@@ -111,6 +119,7 @@ private:
 
     urcl::vector6d_t rob_joints_, rob_joints_vel_;
     std::mutex joint_data_mutex_;
+    std::mutex config_command_mutex_;
     KDL::JntArray q_msr_;
 
     geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
