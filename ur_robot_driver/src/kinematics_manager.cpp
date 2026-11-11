@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <stdexcept>
 #include <urdf/model.h>
 #include <kdl_parser/kdl_parser.hpp>
 
@@ -19,8 +20,20 @@
 //            KinematicsManager
 // -----------------------------------------
 
+namespace
+{
+void validateSerializedValue(double value)
+{
+    const double scaled = value * 1000000.0;
+    if (!std::isfinite(scaled) ||
+        std::round(scaled) < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
+        std::round(scaled) > static_cast<double>(std::numeric_limits<std::int32_t>::max()))
+        throw std::invalid_argument("Robot configuration value cannot be serialized by URCL");
+}
+}
+
 KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::UrDriver> driver)
-    : nh_(nh), driver_(std::move(driver)), payload_(0.0), num_joints_(0), first_quat_ee_(true), first_quat_ll_(true), rate_hz_(50.0)
+    : nh_(nh), driver_(std::move(driver)), num_joints_(0), first_quat_ee_(true), first_quat_ll_(true), rate_hz_(50.0)
 {
     std::string name_space = nh_.getNamespace();
     std::string root_name, tip_name;
@@ -118,30 +131,8 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
 
     t_tool02LastLink_ = KDL::Frame::Identity();
     t_tool02LastLink_.M = KDL::Rotation::RPY(roll_last_link, pitch_last_link, yaw_last_link);
-    KDL::Frame t_LastLink2EE = KDL::Frame::Identity();
-    t_LastLink2EE.p.data[0] = x_pos_ee;
-    t_LastLink2EE.p.data[1] = y_pos_ee;
-    t_LastLink2EE.p.data[2] = z_pos_ee;
-    t_LastLink2EE.M = KDL::Rotation::RPY(roll_ee, pitch_ee, yaw_ee);
-    KDL::Frame t_tool02EE = t_tool02LastLink_ * t_LastLink2EE;
-    tcp_offs_[0] = t_tool02EE.p.x();
-    tcp_offs_[1] = t_tool02EE.p.y();
-    tcp_offs_[2] = t_tool02EE.p.z();
-    tcp_offs_[3] = t_tool02EE.M.GetRot().x();
-    tcp_offs_[4] = t_tool02EE.M.GetRot().y();
-    tcp_offs_[5] = t_tool02EE.M.GetRot().z();
-    for (double value : tcp_offs_)
-    {
-        // URCL serializes SET_TCP_OFFSET as rounded signed int32 units of
-        // 1e-6. Validate before that cast can overflow or receive NaN.
-        const double scaled = value * 1000000.0;
-        if (!std::isfinite(scaled) ||
-            std::round(scaled) < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
-            std::round(scaled) > static_cast<double>(std::numeric_limits<std::int32_t>::max()))
-            throw std::runtime_error("Computed TCP cannot be serialized as URCL SET_TCP_OFFSET");
-    }
-
-    if (!nh_.getParam("mass", payload_))
+    double mass;
+    if (!nh_.getParam("mass", mass))
         throw std::runtime_error("Param mass missing");
 
     std::vector<double> cog;
@@ -150,10 +141,8 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     if (cog.size() != 3)
         throw std::runtime_error("Param cog invalid");
 
-    KDL::Vector p_tool0 = t_tool02LastLink_ * KDL::Vector(cog[0], cog[1], cog[2]);
-    cog_ur_[0] = p_tool0.x();
-    cog_ur_[1] = p_tool0.y();
-    cog_ur_[2] = p_tool0.z();
+    config_ = makeRobotConfig({{x_pos_ee, y_pos_ee, z_pos_ee}},
+        {{roll_ee, pitch_ee, yaw_ee}}, mass, {{cog[0], cog[1], cog[2]}});
 }
 
 KinematicsManager::~KinematicsManager()
@@ -163,14 +152,68 @@ KinematicsManager::~KinematicsManager()
 
 void KinematicsManager::applyRobotConfig()
 {
-    std::lock_guard<std::mutex> lock(config_command_mutex_);
+    auto lock = lockRobotConfig();
+    sendRobotConfig(config_, lock);
+}
+
+KinematicsManager::RobotConfig KinematicsManager::makeRobotConfig(
+    const std::array<double, 3>& translation, const std::array<double, 3>& rpy,
+    double mass, const std::array<double, 3>& cog) const
+{
+    for (double value : translation)
+        if (!std::isfinite(value)) throw std::invalid_argument("TCP translation must be finite");
+    for (double value : rpy)
+        if (!std::isfinite(value)) throw std::invalid_argument("TCP RPY must be finite");
+    for (double value : cog)
+        if (!std::isfinite(value)) throw std::invalid_argument("Payload centre of mass must be finite");
+    if (!std::isfinite(mass) || mass < 0.0)
+        throw std::invalid_argument("Payload mass must be finite and nonnegative");
+
+    KDL::Frame last_link_to_ee(KDL::Rotation::RPY(rpy[0], rpy[1], rpy[2]),
+                               KDL::Vector(translation[0], translation[1], translation[2]));
+    const KDL::Frame tool0_to_ee = t_tool02LastLink_ * last_link_to_ee;
+    const KDL::Vector cog_tool0 = t_tool02LastLink_ * KDL::Vector(cog[0], cog[1], cog[2]);
+    RobotConfig result;
+    result.tcp_offset = {{tool0_to_ee.p.x(), tool0_to_ee.p.y(), tool0_to_ee.p.z(),
+        tool0_to_ee.M.GetRot().x(), tool0_to_ee.M.GetRot().y(), tool0_to_ee.M.GetRot().z()}};
+    result.mass = mass;
+    result.cog = {{cog_tool0.x(), cog_tool0.y(), cog_tool0.z()}};
+    for (double value : result.tcp_offset) validateSerializedValue(value);
+    validateSerializedValue(result.mass);
+    for (double value : result.cog) validateSerializedValue(value);
+    return result;
+}
+
+std::unique_lock<std::mutex> KinematicsManager::lockRobotConfig() const
+{
+    return std::unique_lock<std::mutex>(config_command_mutex_);
+}
+
+void KinematicsManager::sendRobotConfig(const RobotConfig& config,
+                                        const std::unique_lock<std::mutex>& lock)
+{
+    if (!lock.owns_lock() || lock.mutex() != &config_command_mutex_)
+        throw std::logic_error("Robot configuration lock required");
     config_applied_.store(false);
-    if (!driver_->setTcpOffset(tcp_offs_))
+    if (!driver_->setTcpOffset(config.tcp_offset))
         throw std::runtime_error("TCP set failed");
-
-    if (!driver_->setPayload(payload_, cog_ur_))
+    if (!driver_->setPayload(config.mass, config.cog))
         throw std::runtime_error("Payload set failed");
+}
 
+void KinematicsManager::commitVerifiedRobotConfig(const RobotConfig& config,
+                                                   const std::unique_lock<std::mutex>& lock)
+{
+    if (!lock.owns_lock() || lock.mutex() != &config_command_mutex_)
+        throw std::logic_error("Robot configuration lock required");
+    config_ = config;
+    config_applied_.store(true);
+}
+
+urcl::vector6d_t KinematicsManager::expectedTcpOffset() const
+{
+    auto lock = lockRobotConfig();
+    return config_.tcp_offset;
 }
 
 void KinematicsManager::start(double rate_hz)
@@ -378,16 +421,26 @@ bool KinematicsManager::callbackRobotCurrPose(rpwc_msgs::robotArmState::Request 
 
 bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPayload::Response &res)
 {
-    if (req.mass.data < 0)
+    if (req.mass.data < 0.0)
     {
         res.result.data = false;
         res.info.data = "Payload mass cannot be negative";
         return true;
     }
-    if (req.center_of_mass.x == 0 && req.center_of_mass.y == 0 && req.center_of_mass.z == 0)
+    if (req.center_of_mass.x == 0.0 && req.center_of_mass.y == 0.0 &&
+        req.center_of_mass.z == 0.0)
     {
         res.result.data = false;
         res.info.data = "Center of mass values must be different than zero";
+        return true;
+    }
+    if (!std::isfinite(req.mass.data) ||
+        !std::isfinite(req.center_of_mass.x) ||
+        !std::isfinite(req.center_of_mass.y) ||
+        !std::isfinite(req.center_of_mass.z))
+    {
+        res.result.data = false;
+        res.info.data = "Payload mass or centre of mass is invalid";
         return true;
     }
 
@@ -398,13 +451,27 @@ bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, 
     cog_ur[1] = p_tool0.y();
     cog_ur[2] = p_tool0.z();
 
-    std::lock_guard<std::mutex> lock(config_command_mutex_);
+    try
+    {
+        validateSerializedValue(payload);
+        for (double value : cog_ur) validateSerializedValue(value);
+    }
+    catch (const std::invalid_argument& e)
+    {
+        res.result.data = false;
+        res.info.data = e.what();
+        return true;
+    }
+
+    auto lock = lockRobotConfig();
     bool ok = driver_->setPayload(payload, cog_ur);
     if (ok)
     {
-        payload_ = payload;
-        cog_ur_ = cog_ur;
+        config_.mass = payload;
+        config_.cog = cog_ur;
     }
     res.result.data = ok;
+    if (!ok)
+        res.info.data = "Payload set failed";
     return true;
 }

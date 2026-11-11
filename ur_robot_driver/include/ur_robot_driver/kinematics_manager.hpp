@@ -6,6 +6,7 @@
 // -----------------------------------------
 // System includes
 #include <atomic>
+#include <array>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -36,6 +37,13 @@
 class KinematicsManager
 {
 public:
+    struct RobotConfig
+    {
+        urcl::vector6d_t tcp_offset{};
+        double mass = 0.0;
+        urcl::vector3d_t cog{};
+    };
+
     /**
      * @brief Parses the URDF, builds KDL chains, creates FK solvers, and loads and
      *        precomputes all tool and payload configuration from ROS parameters.
@@ -54,16 +62,19 @@ public:
     /** @brief Calls stop(). */
     ~KinematicsManager();
 
-    /**
-     * @brief Sends the precomputed TCP offset and payload to the robot hardware.
-     *
-     * All values were precomputed in the constructor; this method only performs
-     * the driver calls. Requires the URScript program to be running.
-     * Must be called before start().
-     *
-     * @throws std::runtime_error if a driver call fails.
-     */
+    /** Sends the last verified configuration when the URScript program starts. */
     void applyRobotConfig();
+
+    /** Uses the same tool0-to-last-link transform as the startup parameters. */
+    RobotConfig makeRobotConfig(const std::array<double, 3>& translation,
+                                const std::array<double, 3>& rpy, double mass,
+                                const std::array<double, 3>& cog) const;
+    /** Hold this lock through a runtime write and RTDE verification. */
+    std::unique_lock<std::mutex> lockRobotConfig() const;
+    /** The supplied lock also serializes writes by the existing payload service. */
+    void sendRobotConfig(const RobotConfig& config, const std::unique_lock<std::mutex>& lock);
+    /** Updates the in-memory restart configuration after successful readback. */
+    void commitVerifiedRobotConfig(const RobotConfig& config, const std::unique_lock<std::mutex>& lock);
 
     /** Marks the sent TCP configuration applied only after controller readback. */
     void markRobotConfigVerified() { config_applied_.store(true); }
@@ -71,7 +82,7 @@ public:
     bool isRobotConfigVerified() const { return config_applied_.load(); }
 
     /** The flange-to-TCP pose sent to the UR controller, in m and rotation-vector rad. */
-    urcl::vector6d_t expectedTcpOffset() const { return tcp_offs_; }
+    urcl::vector6d_t expectedTcpOffset() const;
 
     /**
      * @brief Starts the joint-state and pose publisher threads and advertises services.
@@ -112,14 +123,12 @@ private:
     KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
     std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
     KDL::Frame t_tool02LastLink_;
-    urcl::vector6d_t tcp_offs_;
-    double payload_;
-    urcl::vector3d_t cog_ur_;
+    RobotConfig config_;
     int num_joints_;
 
     urcl::vector6d_t rob_joints_, rob_joints_vel_;
     std::mutex joint_data_mutex_;
-    std::mutex config_command_mutex_;
+    mutable std::mutex config_command_mutex_;
     KDL::JntArray q_msr_;
 
     geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;

@@ -208,6 +208,22 @@ std::uint64_t TcpVerifier::claimPendingEpoch()
     return 0;
 }
 
+bool TcpVerifier::prepareReconfiguration(const Vector6& expected, std::uint64_t epoch)
+{
+    const Vector6 quantized = quantizeForUrScript(expected);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (epoch != epoch_ || !program_running_ ||
+        !freshLocked(std::chrono::steady_clock::now()))
+        return false;
+    expected_ = quantized;
+    claimed_epoch_ = epoch;
+    invalidateLocked();
+    fault_ = false;
+    fault_reason_.clear();
+    cv_.notify_all();
+    return true;
+}
+
 bool TcpVerifier::beginVerification(std::uint64_t epoch, std::uint64_t after_sequence)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -225,6 +241,8 @@ TcpVerifier::WaitResult TcpVerifier::waitForVerification(std::uint64_t epoch, st
     cv_.wait_for(lock, timeout, [&] { return verified_ || fault_ || epoch != epoch_ || !program_running_; });
     if (epoch != epoch_ || !program_running_)
         return WaitResult::INTERRUPTED;
+    if (fault_)
+        return WaitResult::FAULT;
     if (verified_)
         return WaitResult::VERIFIED;
     return WaitResult::TIMEOUT;
@@ -235,6 +253,21 @@ void TcpVerifier::fail(std::uint64_t epoch, const std::string& reason)
     std::lock_guard<std::mutex> lock(mutex_);
     if (epoch != epoch_)
         return;
+    invalidateLocked();
+    fault_ = true;
+    fault_reason_ = reason;
+    cv_.notify_all();
+}
+
+void TcpVerifier::failReconfiguration(std::uint64_t epoch,
+                                      const Vector6& previous_expected,
+                                      const std::string& reason)
+{
+    const Vector6 quantized = quantizeForUrScript(previous_expected);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (epoch != epoch_)
+        return;
+    expected_ = quantized;
     invalidateLocked();
     fault_ = true;
     fault_reason_ = reason;
@@ -266,3 +299,8 @@ bool TcpVerifier::snapshot(BridgeRtdeSample& sample) const
 std::uint64_t TcpVerifier::sequence() const { std::lock_guard<std::mutex> lock(mutex_); return sequence_; }
 std::uint64_t TcpVerifier::epoch() const { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
 std::string TcpVerifier::faultReason() const { std::lock_guard<std::mutex> lock(mutex_); return fault_reason_; }
+TcpVerifier::Vector6 TcpVerifier::expected() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return expected_;
+}

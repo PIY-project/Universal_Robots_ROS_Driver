@@ -32,6 +32,7 @@
 #include <rpwc_msgs/getFreeJogParams.h>
 #include <rpwc_msgs/setSpeedOverride.h>
 #include <rpwc_msgs/getSpeedOverride.h>
+#include <rpwc_msgs/setTcpPayload.h>
 
 // Local includes
 #include <ur_robot_driver/urcl_log_handler.h>
@@ -70,6 +71,7 @@ void thread_handle_rtde();
 void thread_keep_alive();
 void thread_configure_robot();
 bool motion_ready();
+bool try_claim_motion_goal(bool& configuration_in_progress);
 
 void handleRobotProgramState(bool program_running);
 void shutdown(std::string reason);
@@ -83,6 +85,7 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 // -----------------------------------------
 
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res);
+bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs::setTcpPayload::Response &res);
 
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res);
 bool callback_get_controller(rpwc_msgs::getController::Request &req, rpwc_msgs::getController::Response &res);
@@ -146,7 +149,10 @@ std::atomic<bool> config_worker_running_{false};
 std::atomic<bool> bridge_threads_running_{false};
 std::atomic<bool> cancel_required_{false};
 std::atomic<bool> active_motion_goal_{false};
+std::atomic<bool> reconfiguring_robot_{false};
 std::atomic<bool> ur_program_connected_{false};
+std::mutex goal_admission_mutex_;
+std::mutex config_operation_mutex_;
 std::mutex program_callback_mutex_;
 bool program_callback_enabled_ = true;
 double tcp_verification_timeout_s_;

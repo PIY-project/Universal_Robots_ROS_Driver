@@ -106,6 +106,15 @@ public:
     ~MotionGoalScope() { active_motion_goal_.store(false); }
 };
 
+class ReconfigurationScope
+{
+public:
+    ReconfigurationScope() = default;
+    ReconfigurationScope(const ReconfigurationScope&) = delete;
+    ReconfigurationScope& operator=(const ReconfigurationScope&) = delete;
+    ~ReconfigurationScope() { reconfiguring_robot_.store(false); }
+};
+
 bool requiredRecipePresent(const std::vector<std::string>& recipe)
 {
     static const char* fields[] = {"timestamp", "actual_q", "actual_qd",
@@ -315,9 +324,19 @@ void handleRobotProgramState(bool program_running)
 
 bool motion_ready()
 {
-    return ur_program_connected_.load() && robot_state_manager_ && robot_state_manager_->isReady() &&
+    return !reconfiguring_robot_.load() && ur_program_connected_.load() &&
+           robot_state_manager_ && robot_state_manager_->isReady() &&
            tcp_verifier_ && tcp_verifier_->motionReady() &&
            kinematics_manager_ && kinematics_manager_->isRobotConfigVerified();
+}
+
+bool try_claim_motion_goal(bool& configuration_in_progress)
+{
+    std::lock_guard<std::mutex> lock(goal_admission_mutex_);
+    configuration_in_progress = reconfiguring_robot_.load();
+    if (configuration_in_progress)
+        return false;
+    return !active_motion_goal_.exchange(true);
 }
 
 void thread_configure_robot()
@@ -348,6 +367,12 @@ void thread_configure_robot()
             continue;
         }
 
+        std::unique_lock<std::mutex> operation_lock(config_operation_mutex_);
+        if (tcp_verifier_->epoch() != epoch || tcp_verifier_->isFault() ||
+            tcp_verifier_->isVerified() ||
+            !tcp_verifier_->prepareReconfiguration(kinematics_manager_->expectedTcpOffset(), epoch))
+            continue;
+
         ROS_INFO_STREAM("[TCP]: Applying TCP and payload for program epoch " << epoch);
         try
         {
@@ -377,6 +402,9 @@ void thread_configure_robot()
                 ROS_ERROR_STREAM("[TCP]: Verification failed: "
                     << format_tcp_state(tcp_verifier_->faultReason()));
             }
+            else if (result == TcpVerifier::WaitResult::FAULT)
+                ROS_ERROR_STREAM("[TCP]: Verification failed: "
+                    << format_tcp_state(tcp_verifier_->faultReason()));
         }
         catch (const std::exception& e)
         {
@@ -535,6 +563,103 @@ bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req
     return true;
 }
 
+bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req,
+                              rpwc_msgs::setTcpPayload::Response &res)
+{
+    const auto reject = [&res](const std::string& reason) {
+        res.result.data = false;
+        res.info.data = reason;
+        return true;
+    };
+    if (!kinematics_manager_ || !tcp_verifier_ || !robot_state_manager_)
+        return reject("Robot configuration is unavailable");
+
+    KinematicsManager::RobotConfig requested;
+    try
+    {
+        requested = kinematics_manager_->makeRobotConfig(
+            {{req.tcp_translation.x, req.tcp_translation.y, req.tcp_translation.z}},
+            {{req.tcp_rpy.x, req.tcp_rpy.y, req.tcp_rpy.z}}, req.mass.data,
+            {{req.center_of_mass.x, req.center_of_mass.y, req.center_of_mass.z}});
+    }
+    catch (const std::exception& e)
+    {
+        return reject(e.what());
+    }
+
+    std::unique_lock<std::mutex> operation_lock(config_operation_mutex_, std::try_to_lock);
+    if (!operation_lock.owns_lock())
+        return reject("Robot configuration is already in progress");
+    {
+        std::lock_guard<std::mutex> admission_lock(goal_admission_mutex_);
+        if (active_motion_goal_.load())
+            return reject("A robot motion goal is active");
+        if (reconfiguring_robot_.load())
+            return reject("Robot configuration is already in progress");
+        std::lock_guard<std::mutex> command_lock(send_command_mutex_);
+        if (freedrive_)
+            return reject("Freedrive is active");
+        if (!ur_program_connected_.load() || !robot_state_manager_->isReady() ||
+            !tcp_verifier_->programRunning())
+            return reject("UR program or RTDE is not ready");
+        reconfiguring_robot_.store(true);
+    }
+    ReconfigurationScope reconfiguration_scope;
+    kinematics_manager_->invalidateRobotConfig();
+
+    const auto previous_expected = kinematics_manager_->expectedTcpOffset();
+    auto config_lock = kinematics_manager_->lockRobotConfig();
+    const std::uint64_t epoch = tcp_verifier_->epoch();
+    if (!tcp_verifier_->prepareReconfiguration(requested.tcp_offset, epoch))
+    {
+        tcp_verifier_->failReconfiguration(epoch, previous_expected,
+            "UR program or RTDE became unavailable during reconfiguration");
+        return reject("UR program or RTDE became unavailable during reconfiguration");
+    }
+
+    try
+    {
+        kinematics_manager_->sendRobotConfig(requested, config_lock);
+    }
+    catch (const std::exception& e)
+    {
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, e.what());
+        ROS_ERROR_STREAM("[TCP]: Runtime configuration failed: " << e.what());
+        return reject(e.what());
+    }
+
+    const std::uint64_t after_sequence = tcp_verifier_->sequence();
+    if (!tcp_verifier_->beginVerification(epoch, after_sequence))
+    {
+        tcp_verifier_->failReconfiguration(epoch, previous_expected,
+            "UR program or RTDE changed before TCP verification");
+        return reject("UR program or RTDE changed before TCP verification");
+    }
+
+    const auto verification = tcp_verifier_->waitForVerification(epoch,
+        std::chrono::milliseconds(static_cast<int>(tcp_verification_timeout_s_ * 1000.0)));
+    if (verification != TcpVerifier::WaitResult::VERIFIED ||
+        !ur_program_connected_.load() || !robot_state_manager_->isReady() ||
+        !tcp_verifier_->motionReady() || tcp_verifier_->epoch() != epoch)
+    {
+        const std::string reason = verification == TcpVerifier::WaitResult::TIMEOUT ?
+            "TCP readback did not match before timeout" :
+            verification == TcpVerifier::WaitResult::FAULT ?
+            tcp_verifier_->faultReason() :
+            "UR program or RTDE changed during TCP verification";
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, reason);
+        ROS_ERROR_STREAM("[TCP]: Runtime configuration failed: " << reason);
+        return reject(reason);
+    }
+
+    kinematics_manager_->commitVerifiedRobotConfig(requested, config_lock);
+    ROS_INFO_STREAM("[TCP]: Runtime controller TCP verified: "
+        << format_tcp(tcp_verifier_->expected()) << "; payload command accepted");
+    res.result.data = true;
+    res.info.data = "TCP verified from RTDE; payload command accepted";
+    return true;
+}
+
 bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::setController::Response &res)
 {
     if (req.controller != 2 && last_controller_started_ != 2)
@@ -547,20 +672,30 @@ bool callback_set_controller(rpwc_msgs::setController::Request &req, rpwc_msgs::
     else if (req.controller != 2)
     {
         ROS_INFO("Start native controller");
+        std::lock_guard<std::mutex> lock(send_command_mutex_);
+        if (reconfiguring_robot_.load())
+        {
+            res.result.data = false;
+            return true;
+        }
         if (req.controller != 99)
             last_controller_started_ = req.controller;
         else
             last_controller_started_ = 0;
 
-        std::lock_guard<std::mutex> lock(send_command_mutex_);
         res.result.data = ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_STOP);
         freedrive_ = false;
         return true;
     }
 
     ROS_INFO("Start freedrive");
-    last_controller_started_ = 2;
     std::lock_guard<std::mutex> lock(send_command_mutex_);
+    if (reconfiguring_robot_.load())
+    {
+        res.result.data = false;
+        return true;
+    }
+    last_controller_started_ = 2;
     freedrive_ = true;
     res.result.data = ur_driver_->writeFreedriveControlMessage(urcl::control::FreedriveControlMessage::FREEDRIVE_START, freedrive_params_, urcl::RobotReceiveTimeout::millisec(200));
     return true;
@@ -696,17 +831,20 @@ void CartesianMove::goal_callback()
     ROS_INFO("[Cartesian Move]: Accepting new goal");
     const auto rpwc_goal = as.acceptNewGoal();
     rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
-    if (active_motion_goal_.exchange(true))
+    bool configuration_in_progress = false;
+    if (!try_claim_motion_goal(configuration_in_progress))
     {
         // SimpleActionServer may already have preempted the previous action
         // when acceptNewGoal() returned. Stop its physical motion before
         // rejecting this overlapping goal.
-        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+        if (!configuration_in_progress && ur_instruction_executor_ &&
+            !ur_instruction_executor_->cancelMotion() &&
             robot_state_manager_ && !robot_state_manager_->forceProgramStop())
             ROS_FATAL("[Cartesian Move]: Could not confirm cancellation of overlapping motion");
         rpwc_result.success = false;
         rpwc_result.error_code = 9;
-        rpwc_result.msg = "Another robot motion is active";
+        rpwc_result.msg = configuration_in_progress ?
+            "Robot configuration in progress" : "Another robot motion is active";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
@@ -867,14 +1005,17 @@ void JointsMove::goal_callback()
     ROS_INFO("[Joints Move]: Accepting new goal");
     const auto rpwc_goal = as.acceptNewGoal();
     rpwc_msgs::nativeJointsCommandsResult rpwc_result;
-    if (active_motion_goal_.exchange(true))
+    bool configuration_in_progress = false;
+    if (!try_claim_motion_goal(configuration_in_progress))
     {
-        if (ur_instruction_executor_ && !ur_instruction_executor_->cancelMotion() &&
+        if (!configuration_in_progress && ur_instruction_executor_ &&
+            !ur_instruction_executor_->cancelMotion() &&
             robot_state_manager_ && !robot_state_manager_->forceProgramStop())
             ROS_FATAL("[Joints Move]: Could not confirm cancellation of overlapping motion");
         rpwc_result.success = false;
         rpwc_result.error_code = 9;
-        rpwc_result.msg = "Another robot motion is active";
+        rpwc_result.msg = configuration_in_progress ?
+            "Robot configuration in progress" : "Another robot motion is active";
         as.setAborted(rpwc_result, rpwc_result.msg);
         return;
     }
@@ -1368,6 +1509,9 @@ int main(int argc, char **argv)
     io_manager_->start(freq_rtde_hz_);
 
     // Advertise services
+    ros::ServiceServer set_tcp_payload_srv = nh_->advertiseService<
+        rpwc_msgs::setTcpPayload::RequestType, rpwc_msgs::setTcpPayload::ResponseType>(
+            "rpwc_set_tcp_payload", &callback_set_tcp_payload);
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
     ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
     ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);

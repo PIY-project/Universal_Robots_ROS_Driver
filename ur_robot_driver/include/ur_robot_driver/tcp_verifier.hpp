@@ -32,7 +32,7 @@ public:
     using Vector6 = BridgeRtdeSample::Vector6;
     enum class Event { NONE, PROGRAM_STARTED, PROGRAM_STOPPED, TCP_CHANGED, TIMESTAMP_RESET,
                        DUPLICATE_SAMPLE, INVALID_SAMPLE };
-    enum class WaitResult { VERIFIED, INTERRUPTED, TIMEOUT };
+    enum class WaitResult { VERIFIED, INTERRUPTED, FAULT, TIMEOUT };
 
     explicit TcpVerifier(const Vector6& expected, std::chrono::milliseconds max_sample_age);
 
@@ -45,9 +45,12 @@ public:
     bool onNoPackage();
     void onProgramDisconnected();
     std::uint64_t claimPendingEpoch();
+    bool prepareReconfiguration(const Vector6& expected, std::uint64_t epoch);
     bool beginVerification(std::uint64_t epoch, std::uint64_t after_sequence);
     WaitResult waitForVerification(std::uint64_t epoch, std::chrono::milliseconds timeout);
     void fail(std::uint64_t epoch, const std::string& reason);
+    void failReconfiguration(std::uint64_t epoch, const Vector6& previous_expected,
+                             const std::string& reason);
     void waitForChange(std::chrono::milliseconds timeout);
     bool motionReady() const;
     bool isFault() const;
@@ -57,13 +60,13 @@ public:
     std::uint64_t sequence() const;
     std::uint64_t epoch() const;
     std::string faultReason() const;
-    const Vector6& expected() const { return expected_; }
+    Vector6 expected() const;
 
 private:
     void invalidateLocked();
     bool freshLocked(std::chrono::steady_clock::time_point now) const;
 
-    const Vector6 expected_;
+    Vector6 expected_;
     const std::chrono::milliseconds max_sample_age_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
