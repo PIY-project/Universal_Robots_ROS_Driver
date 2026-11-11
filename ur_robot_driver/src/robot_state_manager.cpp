@@ -74,6 +74,8 @@ bool RobotStateManager::isUnrecoverableSafetyMode(int32_t safety_mode)
 
 bool RobotStateManager::attemptRecovery()
 {
+    if (!running_ || !ros::ok())
+        return false;
     int32_t safety_mode = rtde_safety_mode_.load(std::memory_order_relaxed);
 
     if (safety_mode == urcl::toUnderlying(urcl::SafetyMode::PROTECTIVE_STOP))
@@ -90,6 +92,8 @@ bool RobotStateManager::attemptRecovery()
             ROS_ERROR("[StateManager]: Failed to unlock protective stop");
             return false;
         }
+        if (!running_ || !ros::ok())
+            return false;
     }
 
     if (isSafeguardMode(safety_mode))
@@ -102,9 +106,13 @@ bool RobotStateManager::attemptRecovery()
                 break;
             ros::Duration(0.2).sleep();
         }
+        if (!running_ || !ros::ok())
+            return false;
         ROS_INFO("[StateManager]: Safeguard cleared, continuing recovery");
 
         ros::Duration(0.5).sleep();
+        if (!running_ || !ros::ok())
+            return false;
 
         if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2)
             return true;
@@ -123,6 +131,9 @@ bool RobotStateManager::attemptRecovery()
     // Verify motors are on before sending the program
     int32_t robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
 
+    if (!running_ || !ros::ok())
+        return false;
+
     if (robot_mode == urcl::toUnderlying(urcl::RobotMode::POWER_OFF))
     {
         ROS_WARN("[StateManager]: Robot is powered off, attempting to power on");
@@ -132,13 +143,15 @@ bool RobotStateManager::attemptRecovery()
             return false;
         }
         ros::Time wait_start = ros::Time::now();
-        while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
+        while (running_ && ros::ok() && (ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
             if (robot_mode == urcl::toUnderlying(urcl::RobotMode::IDLE))
                 break;
             ros::Duration(0.2).sleep();
         }
+        if (!running_ || !ros::ok())
+            return false;
     }
 
     if (robot_mode == urcl::toUnderlying(urcl::RobotMode::IDLE))
@@ -150,7 +163,7 @@ bool RobotStateManager::attemptRecovery()
             return false;
         }
         ros::Time wait_start = ros::Time::now();
-        while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
+        while (running_ && ros::ok() && (ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             robot_mode = rtde_robot_mode_.load(std::memory_order_relaxed);
             if (robot_mode == urcl::toUnderlying(urcl::RobotMode::RUNNING))
@@ -161,6 +174,8 @@ bool RobotStateManager::attemptRecovery()
                 break;
             ros::Duration(0.2).sleep();
         }
+        if (!running_ || !ros::ok())
+            return false;
     }
 
     if (robot_mode != urcl::toUnderlying(urcl::RobotMode::RUNNING))
@@ -171,6 +186,8 @@ bool RobotStateManager::attemptRecovery()
 
     for (int attempt = 1; attempt <= recovery_retries_; ++attempt)
     {
+        if (!running_ || !ros::ok())
+            return false;
         ROS_INFO_STREAM("[StateManager]: Sending robot program (attempt " << attempt << "/" << recovery_retries_ << ")");
         if (!driver_->sendRobotProgram())
         {
@@ -179,10 +196,12 @@ bool RobotStateManager::attemptRecovery()
         }
 
         ros::Time wait_start = ros::Time::now();
-        while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
+        while (running_ && ros::ok() && (ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
             if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2)
             {
+                if (!running_ || !ros::ok())
+                    return false;
                 if (on_program_restarted_callback_)
                 {
                     try
@@ -198,6 +217,8 @@ bool RobotStateManager::attemptRecovery()
             }
             ros::Duration(0.05).sleep();
         }
+        if (!running_ || !ros::ok())
+            return false;
 
         ROS_WARN_STREAM("[StateManager]: Program did not start within " << recovery_timeout_s_ << "s (attempt " << attempt << "/" << recovery_retries_ << ")");
     }

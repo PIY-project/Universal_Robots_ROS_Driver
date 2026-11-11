@@ -6,6 +6,7 @@
 // -----------------------------------------
 // System includes
 #include <chrono>
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -68,7 +69,6 @@ void thread_handle_rtde();
 void thread_keep_alive();
 
 void handleRobotProgramState(bool program_running);
-void shutdown(std::string reason);
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
 bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
@@ -134,6 +134,8 @@ private:
 ros::NodeHandle *nh_;
 int8_t init_status_;
 bool init_success_;
+std::mutex init_status_mutex_;
+std::atomic<bool> worker_failed_{false};
 std::string init_msg_, name_space_, robot_ip_, urscript_file_path_, calibration_hash_;
 double freq_rtde_hz_, max_speed_linear_, max_acceleration_linear_, max_speed_joint_, max_acceleration_joint_;
 std::shared_ptr<urcl::DashboardClient> ur_dashboard_;

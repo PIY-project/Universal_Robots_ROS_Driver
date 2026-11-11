@@ -161,10 +161,17 @@ void KinematicsManager::start(double rate_hz)
     robot_curr_pose_srv_ = nh_.advertiseService("rpwc_robot_curr_pose", &KinematicsManager::callbackRobotCurrPose, this);
     set_payload_srv_ = nh_.advertiseService("rpwc_set_payload", &KinematicsManager::callbackSetPayload, this);
 
-    joint_states_thread_ = std::thread(&KinematicsManager::jointStatePublisherThread, this);
-    pose_thread_ = std::thread(&KinematicsManager::posePublisherThread, this);
-
     running_ = true;
+    joint_states_thread_ = std::thread(&KinematicsManager::jointStatePublisherThread, this);
+    try
+    {
+        pose_thread_ = std::thread(&KinematicsManager::posePublisherThread, this);
+    }
+    catch (...)
+    {
+        stop();
+        throw;
+    }
 }
 
 void KinematicsManager::stop()

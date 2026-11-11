@@ -6,15 +6,22 @@
 
 void set_init_end_status(const bool success, const std::string &msg)
 {
-    init_status_ = 1;
-    init_success_ = success;
-    init_msg_ = msg;
+    bool worker_error;
+    {
+        std::lock_guard<std::mutex> lock(init_status_mutex_);
+        worker_error = worker_failed_;
+        if (!worker_error)
+        {
+            init_status_ = 1;
+            init_success_ = success;
+            init_msg_ = msg;
+        }
+    }
 
-    if (success)
+    if (success && !worker_error)
         return;
 
     ros::waitForShutdown();
-    shutdown(msg);
 }
 
 bool check_robot_mode(const urcl::RobotMode robot_mode)
@@ -129,34 +136,64 @@ void handleRobotProgramState(bool program_running)
         robot_state_manager_->onProgramStateChanged(program_running);
 }
 
-void shutdown(std::string reason)
+struct BridgeRuntime
 {
-    ROS_WARN_STREAM("Shutting down node, reason: " << reason);
-    if (nh_ != nullptr)
+    explicit BridgeRuntime(ros::AsyncSpinner &spinner) : spinner_(spinner) {}
+    ~BridgeRuntime() { close(); }
+    void close() noexcept
     {
-        motor_off_on_shutdown_ = nh_->param("motor_off_for_deactivation", true);
-        nh_->shutdown();
+        if (closed_) return;
+        closed_ = true;
+        if (ur_instruction_executor_)
+            ur_instruction_executor_->requestShutdown();
+        spinner_.stop();
+        try { if (robot_state_manager_) robot_state_manager_->stop(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Robot state stop: " << e.what()); } catch (...) { ROS_ERROR("Robot state stop failed"); }
+        try { if (io_manager_) io_manager_->stop(); } catch (const std::exception &e) { ROS_ERROR_STREAM("IO stop: " << e.what()); } catch (...) { ROS_ERROR("IO stop failed"); }
+        try { if (kinematics_manager_) kinematics_manager_->stop(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Kinematics stop: " << e.what()); } catch (...) { ROS_ERROR("Kinematics stop failed"); }
+        if (keep_alive.joinable()) { keep_alive.join(); ROS_INFO("Keepalive thread joined"); }
+        bool motor_off = motor_off_on_shutdown_;
+        if (nh_ && nh_->getParam("motor_off_for_deactivation", motor_off)) motor_off_on_shutdown_ = motor_off;
+        else ROS_WARN("Using last known motor_off_for_deactivation setting during shutdown");
+        try { if (ur_driver_) ur_driver_->stopControl(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Control stop: " << e.what()); } catch (...) { ROS_ERROR("Control stop failed"); }
+        try { if (ur_primary_) ur_primary_->commandStop(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Primary program stop: " << e.what()); } catch (...) { ROS_ERROR("Primary program stop failed"); }
+        try { if (ur_dashboard_ && !ur_dashboard_->commandClearOperationalMode()) ROS_ERROR("Clear operational mode failed"); } catch (const std::exception &e) { ROS_ERROR_STREAM("Clear operational mode: " << e.what()); } catch (...) { ROS_ERROR("Clear operational mode failed"); }
+        try { if (ur_dashboard_ && motor_off_on_shutdown_ && !ur_dashboard_->commandPowerOff()) ROS_ERROR("Power off failed"); } catch (const std::exception &e) { ROS_ERROR_STREAM("Power off: " << e.what()); } catch (...) { ROS_ERROR("Power off failed"); }
+        if (ur_driver_) ur_driver_->requestRTDEStop();
+        if (rtde_thread.joinable()) { rtde_thread.join(); ROS_INFO("RTDE thread joined"); }
+        try { if (ur_driver_) ur_driver_->close(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Driver close: " << e.what()); } catch (...) { ROS_ERROR("Driver close failed"); }
+        ur_instruction_executor_.reset();
+        kinematics_manager_.reset();
+        io_manager_.reset();
+        robot_state_manager_.reset();
+        ur_primary_.reset();
+        ur_driver_.reset();
+        try { if (ur_dashboard_) ur_dashboard_->disconnect(); } catch (const std::exception &e) { ROS_ERROR_STREAM("Dashboard disconnect: " << e.what()); } catch (...) { ROS_ERROR("Dashboard disconnect failed"); }
+        ur_dashboard_.reset();
+        delete nh_;
+        nh_ = nullptr;
+        ur_driver::unregisterUrclLogHandler();
+        urcl::setLogLevel(urcl::LogLevel::INFO);
+        ROS_INFO("Bridge connections closed");
     }
+    ros::AsyncSpinner &spinner_;
+    std::thread rtde_thread;
+    std::thread keep_alive;
+    bool closed_ = false;
+};
 
-    if (ur_primary_)
+void report_worker_failure(const std::string &message)
+{
+    worker_failed_ = true;
+    bool was_ready;
     {
-        ur_primary_->commandStop();
-        ur_primary_->stop();
+        std::lock_guard<std::mutex> lock(init_status_mutex_);
+        was_ready = init_status_ == 1 && init_success_;
+        init_status_ = 1;
+        init_success_ = false;
+        init_msg_ = message;
     }
-
-    if (ur_dashboard_)
-    {
-        ur_dashboard_->commandClearOperationalMode();
-        if (motor_off_on_shutdown_)
-            ur_dashboard_->commandPowerOff();
-        ur_dashboard_->disconnect();
-    }
-
-    if (ur_driver_)
-        ur_driver_->stopControl();
-
-    ur_driver::unregisterUrclLogHandler();
-    urcl::setLogLevel(urcl::LogLevel::INFO);
+    ROS_ERROR_STREAM(message);
+    if (was_ready) ros::shutdown();
 }
 
 bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
@@ -220,6 +257,7 @@ bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities
 
 bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req, rpwc_msgs::checkHardwareStatus::Response &res)
 {
+    std::lock_guard<std::mutex> lock(init_status_mutex_);
     res.status.data = init_status_;
     res.result.data = init_success_;
     res.info.data = init_msg_;
@@ -623,6 +661,7 @@ int main(int argc, char **argv)
     nh_ = new ros::NodeHandle();
     ros::AsyncSpinner spinner(4);
     spinner.start();
+    BridgeRuntime runtime(spinner);
 
     // Set default 
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
@@ -640,12 +679,20 @@ int main(int argc, char **argv)
     speed_override_ = 1.0;
     name_space_ = nh_->getNamespace();
     motor_off_on_shutdown_ = true;
-    init_status_ = 0;
-    init_success_ = false;
-    init_msg_ = "";
+    {
+        std::lock_guard<std::mutex> lock(init_status_mutex_);
+        init_status_ = 0;
+        init_success_ = false;
+        init_msg_ = "";
+    }
 
     // Start service for init feedback
     ros::ServiceServer check_hardware_status_srv = nh_->advertiseService<rpwc_msgs::checkHardwareStatus::RequestType, rpwc_msgs::checkHardwareStatus::ResponseType>("check_hardware_status", &callback_check_hardware_status);
+
+    try
+    {
+    if (!nh_->getParam("motor_off_for_deactivation", motor_off_on_shutdown_))
+        ROS_WARN("Using default motor_off_for_deactivation setting");
 
     // Load params
     if (!nh_->getParam("robot_ip", robot_ip_))
@@ -818,6 +865,8 @@ int main(int argc, char **argv)
     urDriverConfig.input_recipe_file = ros::package::getPath("ur_robot_driver") + "/resources/rtde_input_recipe.txt";
     urDriverConfig.headless_mode = true;
     urDriverConfig.handle_program_state = &handleRobotProgramState;
+    urDriverConfig.bind_retry_timeout = std::chrono::seconds(15);
+    urDriverConfig.cancel_requested = []() { return !ros::ok(); };
 
     ur_driver_.reset(new urcl::UrDriver(urDriverConfig));
     ur_driver_->resetRTDEClient(urDriverConfig.output_recipe_file, urDriverConfig.input_recipe_file, freq_rtde_hz_, true);
@@ -847,7 +896,6 @@ int main(int argc, char **argv)
         }
     });
 
-    std::thread rtde_thread{&thread_handle_rtde};
     robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
@@ -875,10 +923,16 @@ int main(int argc, char **argv)
         set_init_end_status(false, e.what());
         return 1;
     }
+    runtime.rtde_thread = std::thread([]() { try { thread_handle_rtde(); } catch (const std::exception &e) { report_worker_failure(std::string("RTDE worker: ") + e.what()); } catch (...) { report_worker_failure("RTDE worker: unknown error"); } });
     // Wait for program start — state manager handles recovery and shutdown on failure
-    while (!robot_state_manager_->isReady() && ros::ok())
+    while (!robot_state_manager_->isReady() && ros::ok() && !worker_failed_)
         ros::Duration(0.05).sleep();
 
+    if (worker_failed_)
+    {
+        ros::waitForShutdown();
+        return 1;
+    }
     if (!ros::ok())
     {
         set_init_end_status(false, "Program start failed");
@@ -919,12 +973,23 @@ int main(int argc, char **argv)
     JointsMove joint_act_srv("native_joints_commands");
 
     ROS_INFO("start");
-    std::thread keep_alive(&thread_keep_alive);
+    runtime.keep_alive = std::thread([]() { try { thread_keep_alive(); } catch (const std::exception &e) { report_worker_failure(std::string("Keepalive worker: ") + e.what()); } catch (...) { report_worker_failure("Keepalive worker: unknown error"); } });
     set_init_end_status(true, "Node started");
     ros::waitForShutdown();
 
     ROS_INFO("Exiting");
-    spinner.stop();
-    shutdown("Node shutdown");
-    return 0;
+    runtime.close();
+    return worker_failed_ ? 1 : 0;
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR_STREAM("Bridge initialization failed: " << e.what());
+        set_init_end_status(false, e.what());
+        return 1;
+    }
+    catch (...)
+    {
+        set_init_end_status(false, "Unknown bridge initialization error");
+        return 1;
+    }
 }
