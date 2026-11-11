@@ -6,6 +6,7 @@
   <arg name="rate_rtde_hz" default="50"/>
   <arg name="root_name" default="base"/>
   <arg name="tip_name" default="rpwc_EE"/>
+  <arg name="last_link_name" default="rpwc_last_robot_link"/>
   <arg name="x_pos_EE" default="0"/>
   <arg name="y_pos_EE" default="0"/>
   <arg name="z_pos_EE" default="0"/>
@@ -34,6 +35,7 @@
     <param name="dt_pub_pose" value="$(arg dt_pub_pose)"/>
     <param name="root_name" value="$(arg prefix)$(arg root_name)"/>
     <param name="tip_name" value="$(arg prefix)$(arg tip_name)"/>
+    <param name="last_link_name" value="$(arg prefix)$(arg last_link_name)"/>
     <param name="rate_rtde_hz" value="$(arg rate_rtde_hz)"/>
     <param name="auto_recover_protective_stop" value="$(arg auto_recover_protective_stop)"/>
     <param name="recovery_timeout_s" value="$(arg recovery_timeout_s)"/>

@@ -351,13 +351,5 @@
       <child link="${prefix}rpwc_last_robot_link"/>
     </joint>
 
-    <link name="${prefix}rpwc_EE"/>
-    <joint name="${prefix}rpwc_last_robot_link-rpwc_EE" type="fixed">
-      <origin xyz="${x_pos_EE} ${y_pos_EE} ${z_pos_EE}" rpy="${roll_EE} ${pitch_EE} ${yaw_EE}" />
-      <!-- <origin xyz="$(arg x_pos_EE) $(arg y_pos_EE) $(arg z_pos_EE)" rpy="$(arg roll_EE) $(arg pitch_EE) $(arg yaw_EE)" /> -->
-      <parent link="${prefix}rpwc_last_robot_link"/>
-      <child link="${prefix}rpwc_EE"/>
-    </joint>
-
   </xacro:macro>
 </robot>

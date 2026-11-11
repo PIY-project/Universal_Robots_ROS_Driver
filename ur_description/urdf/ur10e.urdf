@@ -354,13 +354,7 @@
     <parent link="flange"/>
     <child link="rpwc_last_robot_link"/>
   </joint>
-  <link name="rpwc_EE"/>
-  <joint name="rpwc_last_robot_link-rpwc_EE" type="fixed">
-    <origin rpy="0 0 0" xyz="0 0 0"/>
-    <!-- <origin xyz="$(arg x_pos_EE) $(arg y_pos_EE) $(arg z_pos_EE)" rpy="$(arg roll_EE) $(arg pitch_EE) $(arg yaw_EE)" /> -->
-    <parent link="rpwc_last_robot_link"/>
-    <child link="rpwc_EE"/>
-  </joint>
+  
   <!-- ROS-Industrial 'tool0' frame: all-zeros tool frame -->
   <link name="tool0"/>
   <joint name="flange-tool0" type="fixed">
@@ -370,4 +364,3 @@
     <child link="tool0"/>
   </joint>
 </robot>
-
