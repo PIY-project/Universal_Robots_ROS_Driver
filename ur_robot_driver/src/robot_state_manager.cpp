@@ -46,7 +46,20 @@ void RobotStateManager::setOnProgramRestartedCallback(std::function<void()> call
 
 bool RobotStateManager::forceProgramStop()
 {
-    return dashboard_->commandStop();
+    try
+    {
+        return dashboard_->commandStop();
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR_STREAM("[StateManager]: Dashboard program stop failed: " << e.what());
+        return false;
+    }
+}
+
+bool RobotStateManager::connectionsReady() const
+{
+    return driver_->isReverseInterfaceConnected() && driver_->isTrajectoryInterfaceConnected();
 }
 
 void RobotStateManager::onProgramStateChanged(bool running)
@@ -106,7 +119,7 @@ bool RobotStateManager::attemptRecovery()
 
         ros::Duration(0.5).sleep();
 
-        if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2)
+        if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2 && connectionsReady())
             return true;
 
         // Re-check safety mode — PLC may have asserted a new condition during the transition
@@ -181,7 +194,7 @@ bool RobotStateManager::attemptRecovery()
         ros::Time wait_start = ros::Time::now();
         while ((ros::Time::now() - wait_start).toSec() < recovery_timeout_s_)
         {
-            if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2)
+            if (rtde_runtime_state_.load(std::memory_order_relaxed) == 2 && connectionsReady())
             {
                 if (on_program_restarted_callback_)
                 {
@@ -208,6 +221,8 @@ bool RobotStateManager::attemptRecovery()
 void RobotStateManager::monitorThread()
 {
     ros::Rate rate(5.0);
+    bool waiting_for_connections = false;
+    std::chrono::steady_clock::time_point disconnected_since;
 
     while (running_ && ros::ok())
     {
@@ -219,26 +234,48 @@ void RobotStateManager::monitorThread()
 
         uint32_t rt_state = rtde_runtime_state_.load(std::memory_order_relaxed);
         int32_t safety_mode = rtde_safety_mode_.load(std::memory_order_relaxed);
+        const bool connected = connectionsReady();
 
-        if (rt_state == 2)
+        if (rt_state == 2 && connected)
         {
+            waiting_for_connections = false;
             if (!robot_program_ready_.load(std::memory_order_relaxed))
             {
                 ROS_INFO("[StateManager]: Robot program running, bridge ready");
                 robot_program_ready_.store(true, std::memory_order_relaxed);
+                ever_ready_.store(true, std::memory_order_relaxed);
             }
             rate.sleep();
             continue;
         }
 
-        if (robot_program_ready_.load(std::memory_order_relaxed))
+        if (robot_program_ready_.exchange(false, std::memory_order_relaxed))
         {
-            ROS_WARN("[StateManager]: Robot program stopped, bridge blocked");
-            robot_program_ready_.store(false, std::memory_order_relaxed);
+            ROS_WARN("[StateManager]: Robot program or motion connection lost, bridge blocked");
 
             bool is_safeguard = isSafeguardMode(safety_mode);
             if (!is_safeguard && on_blocked_callback_)
                 on_blocked_callback_();
+        }
+
+        // A running program may need a moment to open its reverse sockets.
+        if (rt_state == 2 && !connected)
+        {
+            if (!waiting_for_connections)
+            {
+                disconnected_since = std::chrono::steady_clock::now();
+                waiting_for_connections = true;
+            }
+            if (std::chrono::steady_clock::now() - disconnected_since <
+                std::chrono::duration<double>(recovery_timeout_s_))
+            {
+                rate.sleep();
+                continue;
+            }
+        }
+        else
+        {
+            waiting_for_connections = false;
         }
 
         if (isUnrecoverableSafetyMode(safety_mode))
@@ -248,7 +285,16 @@ void RobotStateManager::monitorThread()
             continue;
         }
 
-        if (!attemptRecovery())
+        bool recovered = false;
+        try
+        {
+            recovered = attemptRecovery();
+        }
+        catch (const std::exception &e)
+        {
+            ROS_ERROR_STREAM("[StateManager]: Recovery failed: " << e.what());
+        }
+        if (!recovered)
         {
             int32_t cur_safety = rtde_safety_mode_.load(std::memory_order_relaxed);
             if (cur_safety != urcl::toUnderlying(urcl::SafetyMode::NORMAL) &&
@@ -257,9 +303,14 @@ void RobotStateManager::monitorThread()
                 rate.sleep();
                 continue;
             }
-            ROS_FATAL("[StateManager]: All recovery attempts failed, shutting down");
-            ros::requestShutdown();
-            return;
+            if (!ever_ready_.load(std::memory_order_relaxed))
+            {
+                ROS_FATAL("[StateManager]: Initial program startup failed, shutting down");
+                ros::requestShutdown();
+                return;
+            }
+            ROS_ERROR("[StateManager]: External Control unavailable; bridge remains blocked and will retry recovery");
+            ros::Duration(5.0).sleep();
         }
     }
 }

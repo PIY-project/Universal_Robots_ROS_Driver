@@ -66,6 +66,11 @@ add_executable(rpwc_ur_bridge_native src/rpwc_ur_bridge_native.cpp src/io_manage
 add_dependencies(rpwc_ur_bridge_native ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(rpwc_ur_bridge_native ${catkin_LIBRARIES} ur_client_library::urcl urcl_log_handler)
 
+if(CATKIN_ENABLE_TESTING)
+  add_executable(ati_stop_monitor_test test/ati_stop_monitor_test.cpp)
+  add_test(NAME ati_stop_monitor_test COMMAND ati_stop_monitor_test)
+endif()
+
 install(TARGETS urcl_log_handler 
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

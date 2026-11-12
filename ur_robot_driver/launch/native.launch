@@ -4,6 +4,7 @@
   <arg name="robot_ip" default="192.168.1.100"/>
   <arg name="dt_pub_pose" default="0.01" doc="dt of threadPubRobPose"/>
   <arg name="rate_rtde_hz" default="50"/>
+  <arg name="ati_high_goal_timeout_s" default="2.0"/>
   <arg name="root_name" default="base"/>
   <arg name="tip_name" default="rpwc_EE"/>
   <arg name="x_pos_EE" default="0"/>
@@ -35,6 +36,7 @@
     <param name="root_name" value="$(arg prefix)$(arg root_name)"/>
     <param name="tip_name" value="$(arg prefix)$(arg tip_name)"/>
     <param name="rate_rtde_hz" value="$(arg rate_rtde_hz)"/>
+    <param name="ati_high_goal_timeout_s" value="$(arg ati_high_goal_timeout_s)"/>
     <param name="auto_recover_protective_stop" value="$(arg auto_recover_protective_stop)"/>
     <param name="recovery_timeout_s" value="$(arg recovery_timeout_s)"/>
     <param name="recovery_retries" value="$(arg recovery_retries)"/>

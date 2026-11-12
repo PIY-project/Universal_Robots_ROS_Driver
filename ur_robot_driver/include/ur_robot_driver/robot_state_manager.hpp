@@ -57,8 +57,12 @@ public:
      */
     void stop();
 
-    /** @brief Returns true when the robot program is running and the bridge may send commands. */
-    bool isReady() const { return robot_program_ready_.load(std::memory_order_relaxed); }
+    /** @brief Returns true when the program and both motion interfaces are ready. */
+    bool isReady() const
+    {
+        return robot_program_ready_.load(std::memory_order_relaxed) &&
+               rtde_runtime_state_.load(std::memory_order_relaxed) == 2 && connectionsReady();
+    }
 
     /** @brief Returns true when the current safety mode is a safeguard stop variant. */
     bool isSafeguardActive() const { return isSafeguardMode(rtde_safety_mode_.load(std::memory_order_relaxed)); }
@@ -123,6 +127,7 @@ private:
 
     void monitorThread();
     bool attemptRecovery();
+    bool connectionsReady() const;
     static bool isUnrecoverableSafetyMode(int32_t safety_mode);
     static bool isSafeguardMode(int32_t safety_mode);
 
@@ -133,6 +138,7 @@ private:
     std::shared_ptr<urcl::DashboardClient> dashboard_;
 
     std::atomic<bool> robot_program_ready_{false};
+    std::atomic<bool> ever_ready_{false};
     std::atomic<bool> rtde_initialized_{false};
     std::atomic<uint32_t> rtde_runtime_state_{0};
     std::atomic<int32_t> rtde_robot_mode_{0};

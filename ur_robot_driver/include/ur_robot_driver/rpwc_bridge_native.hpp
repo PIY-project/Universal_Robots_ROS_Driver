@@ -6,6 +6,8 @@
 // -----------------------------------------
 // System includes
 #include <chrono>
+#include <atomic>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -37,6 +39,8 @@
 #include <ur_robot_driver/io_manager.hpp>
 #include <ur_robot_driver/robot_state_manager.hpp>
 #include <ur_robot_driver/kinematics_manager.hpp>
+#include <ur_robot_driver/ati_stop_monitor.hpp>
+#include <rpwc/rpwc_enum.h>
 
 // UR Client Library includes
 #include <ur_client_library/log.h>
@@ -70,9 +74,11 @@ void thread_keep_alive();
 void handleRobotProgramState(bool program_running);
 void shutdown(std::string reason);
 
-bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
+enum class MotionResult { SUCCESS, FAILED, NOT_READY, ATI_STOPPED };
+MotionResult exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints);
+bool cancel_current_motion();
+MotionResult move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
+MotionResult move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses);
 
 // -----------------------------------------
 //           Services Callbacks
@@ -105,9 +111,7 @@ private:
     void preempt_callback();
 
     CartesianAS as;
-    rpwc_msgs::nativeCartesianCommandsGoalConstPtr rpwc_goal;
-    rpwc_msgs::nativeCartesianCommandsResult rpwc_result;
-    rpwc_msgs::nativeCartesianCommandsFeedback rpwc_feedback;
+    std::atomic<std::uint64_t> goal_epoch_{0};
 };
 
 class JointsMove
@@ -122,9 +126,7 @@ private:
     void preempt_callback();
 
     JointsAS as;
-    rpwc_msgs::nativeJointsCommandsGoalConstPtr rpwc_goal;
-    rpwc_msgs::nativeJointsCommandsResult rpwc_result;
-    rpwc_msgs::nativeJointsCommandsFeedback rpwc_feedback;
+    std::atomic<std::uint64_t> goal_epoch_{0};
 };
 
 // -----------------------------------------
@@ -146,7 +148,10 @@ std::unique_ptr<KinematicsManager> kinematics_manager_;
 int last_controller_started_;
 bool motor_off_on_shutdown_, freedrive_;
 std::mutex send_command_mutex_;
+std::mutex cancel_motion_mutex_;
 urcl::control::FreedriveParams freedrive_params_;
 double speed_override_;
+double ati_high_goal_timeout_s_, program_ready_wait_s_;
+AtiStopMonitor ati_stop_monitor_;
 
 #endif // UR_RPWC_BRIDGE_NATIVE_HPP

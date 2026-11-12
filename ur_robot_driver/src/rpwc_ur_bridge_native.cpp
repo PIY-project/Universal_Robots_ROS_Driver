@@ -1,4 +1,6 @@
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
+#include <algorithm>
+#include <cmath>
 
 // -----------------------------------------
 //                Functions
@@ -79,6 +81,7 @@ void thread_handle_rtde()
             std::uint64_t in_bits, out_bits;
             data_pkg->getData<std::uint64_t>("actual_digital_input_bits", in_bits);
             data_pkg->getData<std::uint64_t>("actual_digital_output_bits", out_bits);
+            ati_stop_monitor_.updateInputs(in_bits);
             io_manager_->digital_input_bits.store(in_bits, std::memory_order_relaxed);
             io_manager_->digital_output_bits.store(out_bits, std::memory_order_relaxed);
         }
@@ -159,16 +162,80 @@ void shutdown(std::string reason)
     urcl::setLogLevel(urcl::LogLevel::INFO);
 }
 
-bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
+bool cancel_current_motion()
 {
-    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    std::lock_guard<std::mutex> lock(cancel_motion_mutex_);
+    if (!ur_instruction_executor_)
         return false;
-
-    std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
-    return ur_instruction_executor_->executeMotion(waypoints);
+    try
+    {
+        return ur_instruction_executor_->cancelMotion();
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR_STREAM("[Motion]: Cancellation failed: " << e.what());
+        return false;
+    }
 }
 
-bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
+MotionResult exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> waypoints)
+{
+    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+        return MotionResult::NOT_READY;
+
+    std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
+    if (!robot_state_manager_->isReady())
+        return MotionResult::NOT_READY;
+
+    const auto goal = ati_stop_monitor_.startGoal();
+    const std::chrono::duration<double> high_timeout(ati_high_goal_timeout_s_);
+    std::atomic<bool> finished{false};
+    std::atomic<bool> ati_stopped{false};
+    std::thread watchdog([&]() {
+        while (!finished.load(std::memory_order_acquire) && ros::ok())
+        {
+            if (ati_stop_monitor_.shouldStop(goal, high_timeout))
+            {
+                ati_stopped.store(true, std::memory_order_release);
+                ROS_WARN("[ATI]: Stop condition detected during trajectory execution");
+                if (!finished.load(std::memory_order_acquire))
+                {
+                    // The controller handles the rising edge itself. Cancellation
+                    // also releases executeMotion() if its socket is still alive.
+                    const bool canceled = cancel_current_motion();
+                    if (!canceled && robot_state_manager_->isReady())
+                    {
+                        ROS_WARN("[ATI]: Motion cancellation unconfirmed; stopping robot program");
+                        if (!robot_state_manager_->forceProgramStop())
+                            ROS_ERROR("[ATI]: Dashboard program stop failed");
+                    }
+                }
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
+
+    bool success = false;
+    try
+    {
+        success = ur_instruction_executor_->executeMotion(waypoints);
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR_STREAM("[Motion]: executeMotion failed: " << e.what());
+    }
+    const auto finished_at = AtiStopMonitor::Clock::now();
+    const bool ati_at_finish = ati_stop_monitor_.shouldStop(goal, high_timeout, finished_at);
+    finished.store(true, std::memory_order_release);
+    watchdog.join();
+
+    if (ati_stopped.load(std::memory_order_acquire) || ati_at_finish)
+        return MotionResult::ATI_STOPPED;
+    return success ? MotionResult::SUCCESS : MotionResult::FAILED;
+}
+
+MotionResult move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
 {
     std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
     KDL::Rotation rot;
@@ -193,7 +260,7 @@ bool move_l(std::vector<geometry_msgs::Pose> waypoints, std::vector<double> velo
     return exec_traj(targets);
 }
 
-bool move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
+MotionResult move_j(std::vector<KDL::JntArray> waypoints, std::vector<double> velocities, std::vector<double> accelerations, std::vector<double> blending_radiuses)
 {
     std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> targets;
     urcl::vector6d_t joints;
@@ -360,6 +427,48 @@ bool callback_get_speed_override(rpwc_msgs::getSpeedOverride::Request &req, rpwc
 //             Actions Servers
 // -----------------------------------------
 
+template <typename ActionServer>
+bool wait_for_program_ready(ActionServer &server)
+{
+    const auto deadline = AtiStopMonitor::Clock::now() +
+                          std::chrono::duration<double>(program_ready_wait_s_);
+    while (ros::ok() && server.isActive() && robot_state_manager_ &&
+           !robot_state_manager_->isReady() && !server.isPreemptRequested())
+    {
+        if (!robot_state_manager_->isSafeguardActive() && AtiStopMonitor::Clock::now() >= deadline)
+            break;
+        ros::Duration(0.1).sleep();
+    }
+    return server.isActive() && !server.isPreemptRequested() && robot_state_manager_ &&
+           robot_state_manager_->isReady();
+}
+
+template <typename Result>
+void set_motion_result(Result &result, MotionResult motion)
+{
+    result.success = motion == MotionResult::SUCCESS;
+    if (motion == MotionResult::ATI_STOPPED)
+    {
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_ATI_SENSOR);
+        result.msg = "Motion stopped by ATI sensor (DI0)";
+    }
+    else if (motion == MotionResult::NOT_READY)
+    {
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "External Control unavailable";
+    }
+    else if (motion == MotionResult::FAILED)
+    {
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "Trajectory execution failed";
+    }
+    else
+    {
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::NO_ERROR);
+        result.msg = "Goal succeeded";
+    }
+}
+
 // Cartesian Action Server
 CartesianMove::CartesianMove(std::string name) : as(*nh_, name, false)
 {
@@ -373,10 +482,11 @@ CartesianMove::~CartesianMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeCartesianCommandsResult result;
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -384,107 +494,117 @@ CartesianMove::~CartesianMove(void)
 void CartesianMove::goal_callback()
 {
     ROS_INFO("[Cartesian Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto epoch = goal_epoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const auto goal = as.acceptNewGoal();
+    rpwc_msgs::nativeCartesianCommandsResult result;
 
-    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    if (!wait_for_program_ready(as))
     {
-        if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+        if (!as.isActive() || epoch != goal_epoch_.load(std::memory_order_acquire))
+            return;
+        if (as.isPreemptRequested())
         {
-            ROS_WARN("[Cartesian Move]: Safeguard stop active, waiting for clearance");
-            while (!robot_state_manager_->isReady() && !as.isPreemptRequested() && ros::ok())
-                ros::Duration(0.1).sleep();
-
-            if (as.isPreemptRequested())
-            {
-                as.setPreempted();
-                return;
-            }
-        }
-
-        if (!robot_state_manager_->isReady())
-        {
-            ROS_WARN("[Cartesian Move]: Robot program not ready, aborting goal");
-            rpwc_result.success = false;
-            rpwc_result.error_code = 9;
-            rpwc_result.msg = "Robot program not ready";
-            as.setAborted(rpwc_result, rpwc_result.msg);
+            result.success = false;
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+            result.msg = "Goal canceled";
+            as.setPreempted(result, result.msg);
             return;
         }
+        ROS_WARN("[Cartesian Move]: External Control unavailable, aborting goal");
+        set_motion_result(result, MotionResult::NOT_READY);
+        as.setAborted(result, result.msg);
+        return;
     }
+    if (epoch != goal_epoch_.load(std::memory_order_acquire))
+        return;
 
-    long unsigned int len = rpwc_goal->Poses.size();
-    if (rpwc_goal->types.size() < len)
-        len = rpwc_goal->types.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    const auto len = goal->Poses.size();
 
     ROS_INFO_STREAM("[Cartesian Move]: Max valid poses: " << len);
-    if (len == 0)
+    if (len == 0 || goal->types.size() != len || goal->velocities.size() != len ||
+        goal->accelerations.size() != len || goal->zone_radiuses.size() != len)
     {
-        ROS_WARN("[Cartesian Move]: No valid poses found, aborting");
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "No data found";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        ROS_WARN("[Cartesian Move]: Invalid trajectory data, aborting");
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "Invalid trajectory data";
+        as.setAborted(result, result.msg);
         return;
     }
 
-    for (auto &type : rpwc_goal->types)
+    for (const auto &type : goal->types)
     {
-        if (type != rpwc_goal->LINEAR_MOVE)
+        if (type != goal->LINEAR_MOVE)
         {
             ROS_ERROR_STREAM("[Cartesian Move]: Uknown move type: '" << type << "' aborting goal");
-            rpwc_result.success = false;
-            rpwc_result.error_code = 9;
-            rpwc_result.msg = "Uknown move type";
-            as.setAborted(rpwc_result, rpwc_result.msg);
+            result.success = false;
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+            result.msg = "Unknown move type";
+            as.setAborted(result, result.msg);
             return;
         }
     }
 
     ROS_INFO("[Cartesian Move]: Executing trajectory");
-    rpwc_result.success = move_l(rpwc_goal->Poses, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
-
-    if (!rpwc_result.success)
+    const MotionResult motion = move_l(goal->Poses, goal->velocities, goal->accelerations, goal->zone_radiuses);
+    if (!as.isActive() || epoch != goal_epoch_.load(std::memory_order_acquire))
+        return;
+    if (as.isPreemptRequested())
     {
-        ROS_INFO("[Cartesian Move]: Goal aborted");
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Goal failed";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+        result.msg = "Goal canceled";
+        as.setPreempted(result, result.msg);
+        return;
+    }
+    set_motion_result(result, motion);
+
+    if (!result.success)
+    {
+        ROS_WARN_STREAM("[Cartesian Move]: Goal aborted: " << result.msg);
+        as.setAborted(result, result.msg);
         return;
     }
 
     ROS_INFO("[Cartesian Move]: Goal completed");
-    rpwc_result.msg = "Goal succeded";
-    as.setSucceeded(rpwc_result, rpwc_result.msg);
+    as.setSucceeded(result, result.msg);
 }
 
 void CartesianMove::preempt_callback()
 {
     ROS_INFO("[Cartesian Move]: Goal preempted");
+    const auto epoch = goal_epoch_.load(std::memory_order_acquire);
+    if (!as.isActive())
+        return;
+
+    rpwc_msgs::nativeCartesianCommandsResult result;
+    result.success = false;
+    result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+    result.msg = "Goal canceled";
 
     if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
     {
         ROS_WARN("[Cartesian Move]: Safeguard active, forcing program stop to cancel motion");
         if (robot_state_manager_->forceProgramStop())
         {
-            as.setPreempted();
+            if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+                as.setPreempted(result, result.msg);
         }
         else
         {
             ROS_ERROR("[Cartesian Move]: Failed to force-stop robot program, falling back to cancelMotion");
-            ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            cancel_current_motion();
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+                as.setAborted(result, result.msg);
         }
     }
     else
     {
-        ur_instruction_executor_->cancelMotion();
-        as.setPreempted();
+        cancel_current_motion();
+        if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+            as.setPreempted(result, result.msg);
     }
 }
 
@@ -501,10 +621,11 @@ JointsMove::~JointsMove(void)
 {
     if (as.isActive())
     {
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Node shutdown";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        rpwc_msgs::nativeJointsCommandsResult result;
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "Node shutdown";
+        as.setAborted(result, result.msg);
     }
     as.shutdown();
 }
@@ -512,104 +633,124 @@ JointsMove::~JointsMove(void)
 void JointsMove::goal_callback()
 {
     ROS_INFO("[Joints Move]: Accepting new goal");
-    rpwc_goal = as.acceptNewGoal();
+    const auto epoch = goal_epoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const auto goal = as.acceptNewGoal();
+    rpwc_msgs::nativeJointsCommandsResult result;
 
-    if (!robot_state_manager_ || !robot_state_manager_->isReady())
+    if (!wait_for_program_ready(as))
     {
-        if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
+        if (!as.isActive() || epoch != goal_epoch_.load(std::memory_order_acquire))
+            return;
+        if (as.isPreemptRequested())
         {
-            ROS_WARN("[Joints Move]: Safeguard stop active, waiting for clearance");
-            while (!robot_state_manager_->isReady() && !as.isPreemptRequested() && ros::ok())
-                ros::Duration(0.1).sleep();
-
-            if (as.isPreemptRequested())
-            {
-                as.setPreempted();
-                return;
-            }
-        }
-
-        if (!robot_state_manager_->isReady())
-        {
-            ROS_WARN("[Joints Move]: Robot program not ready, aborting goal");
-            rpwc_result.success = false;
-            rpwc_result.error_code = 9;
-            rpwc_result.msg = "Robot program not ready";
-            as.setAborted(rpwc_result, rpwc_result.msg);
+            result.success = false;
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+            result.msg = "Goal canceled";
+            as.setPreempted(result, result.msg);
             return;
         }
+        ROS_WARN("[Joints Move]: External Control unavailable, aborting goal");
+        set_motion_result(result, MotionResult::NOT_READY);
+        as.setAborted(result, result.msg);
+        return;
     }
+    if (epoch != goal_epoch_.load(std::memory_order_acquire))
+        return;
 
-    long unsigned int len = rpwc_goal->targets.size();
-    if (rpwc_goal->velocities.size() < len)
-        len = rpwc_goal->velocities.size();
-    if (rpwc_goal->accelerations.size() < len)
-        len = rpwc_goal->accelerations.size();
-    if (rpwc_goal->zone_radiuses.size() < len)
-        len = rpwc_goal->zone_radiuses.size();
+    const auto len = goal->targets.size();
 
     ROS_INFO_STREAM("[Joints Move]: Max valid poses: " << len);
-    if (len == 0)
+    if (len == 0 || goal->velocities.size() != len || goal->accelerations.size() != len ||
+        goal->zone_radiuses.size() != len)
     {
-        ROS_WARN("[Joints Move]: No valid poses found, aborting");
-        rpwc_result.success = false;
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "No data found";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        ROS_WARN("[Joints Move]: Invalid trajectory data, aborting");
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+        result.msg = "Invalid trajectory data";
+        as.setAborted(result, result.msg);
         return;
     }
 
     std::vector<KDL::JntArray> waypoints;
     KDL::JntArray tmpWaypoint;
     tmpWaypoint.resize(kinematics_manager_->getNumJoints());
-    for (auto it = rpwc_goal->targets.begin(); it != rpwc_goal->targets.end(); it++)
+    for (const auto &target : goal->targets)
     {
+        if (target.values.size() != static_cast<std::size_t>(kinematics_manager_->getNumJoints()))
+        {
+            result.success = false;
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+            result.msg = "Invalid joint target size";
+            as.setAborted(result, result.msg);
+            return;
+        }
         for (int i = 0; i < kinematics_manager_->getNumJoints(); i++)
         {
-            tmpWaypoint(i) = it->values[i];
+            tmpWaypoint(i) = target.values[i];
         }
         waypoints.push_back(tmpWaypoint);
     }
 
     ROS_INFO("[Joints Move]: Executing trajectory");
-    rpwc_result.success = move_j(waypoints, rpwc_goal->velocities, rpwc_goal->accelerations, rpwc_goal->zone_radiuses);
-
-    if (!rpwc_result.success)
+    const MotionResult motion = move_j(waypoints, goal->velocities, goal->accelerations, goal->zone_radiuses);
+    if (!as.isActive() || epoch != goal_epoch_.load(std::memory_order_acquire))
+        return;
+    if (as.isPreemptRequested())
     {
-        ROS_INFO("[Joints Move]: Goal aborted");
-        rpwc_result.error_code = 9;
-        rpwc_result.msg = "Goal failed";
-        as.setAborted(rpwc_result, rpwc_result.msg);
+        result.success = false;
+        result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+        result.msg = "Goal canceled";
+        as.setPreempted(result, result.msg);
+        return;
+    }
+    set_motion_result(result, motion);
+
+    if (!result.success)
+    {
+        ROS_WARN_STREAM("[Joints Move]: Goal aborted: " << result.msg);
+        as.setAborted(result, result.msg);
         return;
     }
 
     ROS_INFO("[Joints Move]: Goal completed");
-    rpwc_result.msg = "Goal succeded";
-    as.setSucceeded(rpwc_result, rpwc_result.msg);
+    as.setSucceeded(result, result.msg);
 }
 
 void JointsMove::preempt_callback()
 {
     ROS_INFO("[Joints Move]: Goal preempted");
+    const auto epoch = goal_epoch_.load(std::memory_order_acquire);
+    if (!as.isActive())
+        return;
+
+    rpwc_msgs::nativeJointsCommandsResult result;
+    result.success = false;
+    result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::STOP_RUN);
+    result.msg = "Goal canceled";
 
     if (robot_state_manager_ && robot_state_manager_->isSafeguardActive())
     {
         ROS_WARN("[Joints Move]: Safeguard active, forcing program stop to cancel motion");
         if (robot_state_manager_->forceProgramStop())
         {
-            as.setPreempted();
+            if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+                as.setPreempted(result, result.msg);
         }
         else
         {
             ROS_ERROR("[Joints Move]: Failed to force-stop robot program, falling back to cancelMotion");
-            ur_instruction_executor_->cancelMotion();
-            as.setAborted(rpwc_result, "Failed to confirm cancellation during safeguard stop");
+            cancel_current_motion();
+            result.error_code = static_cast<int16_t>(rpwc::errorArmMotionCode::GENERIC_ERROR);
+            result.msg = "Failed to confirm cancellation during safeguard stop";
+            if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+                as.setAborted(result, result.msg);
         }
     }
     else
     {
-        ur_instruction_executor_->cancelMotion();
-        as.setPreempted();
+        cancel_current_motion();
+        if (epoch == goal_epoch_.load(std::memory_order_acquire) && as.isActive())
+            as.setPreempted(result, result.msg);
     }
 }
 
@@ -698,6 +839,14 @@ int main(int argc, char **argv)
     }
 
     nh_->param<double>("rate_rtde_hz", freq_rtde_hz_, 50.0);
+    nh_->param<double>("ati_high_goal_timeout_s", ati_high_goal_timeout_s_, 2.0);
+    if (!std::isfinite(ati_high_goal_timeout_s_) || ati_high_goal_timeout_s_ <= 0.0)
+    {
+        ROS_FATAL("ati_high_goal_timeout_s must be a positive finite number");
+        ros::requestShutdown();
+        set_init_end_status(false, "Invalid ati_high_goal_timeout_s");
+        return 1;
+    }
 
     bool auto_recover_protective_stop;
     double recovery_timeout_s;
@@ -705,6 +854,7 @@ int main(int argc, char **argv)
     nh_->param<bool>("auto_recover_protective_stop", auto_recover_protective_stop, false);
     nh_->param<double>("recovery_timeout_s", recovery_timeout_s, 3.0);
     nh_->param<int>("recovery_retries", recovery_retries, 3);
+    program_ready_wait_s_ = std::max(2.0, recovery_timeout_s * std::max(1, recovery_retries) + 2.0);
 
     // Use dashboard server to prepare robot controller
     ROS_INFO("Starting Dashboard");
@@ -831,8 +981,7 @@ int main(int argc, char **argv)
     // Init Robot State Manager
     robot_state_manager_.reset(new RobotStateManager(*nh_, ur_driver_, ur_dashboard_, auto_recover_protective_stop, recovery_timeout_s, recovery_retries));
     robot_state_manager_->setOnBlockedCallback([]() {
-        if (ur_instruction_executor_)
-            ur_instruction_executor_->cancelMotion();
+        cancel_current_motion();
     });
     robot_state_manager_->setOnProgramRestartedCallback([]() {
         if (!kinematics_manager_)
