@@ -563,8 +563,7 @@ bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req
     return true;
 }
 
-bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req,
-                              rpwc_msgs::setTcpPayload::Response &res)
+bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs::setTcpPayload::Response &res)
 {
     const auto reject = [&res](const std::string& reason) {
         res.result.data = false;
@@ -573,6 +572,9 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req,
     };
     if (!kinematics_manager_ || !tcp_verifier_ || !robot_state_manager_)
         return reject("Robot configuration is unavailable");
+
+    
+    
 
     KinematicsManager::RobotConfig requested;
     try
@@ -586,6 +588,9 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req,
     {
         return reject(e.what());
     }
+
+    if (!kinematics_manager_->ik_reset(requested))
+        return reject("Failed to reset inverse kinematics");
 
     std::unique_lock<std::mutex> operation_lock(config_operation_mutex_, std::try_to_lock);
     if (!operation_lock.owns_lock())
@@ -1509,9 +1514,7 @@ int main(int argc, char **argv)
     io_manager_->start(freq_rtde_hz_);
 
     // Advertise services
-    ros::ServiceServer set_tcp_payload_srv = nh_->advertiseService<
-        rpwc_msgs::setTcpPayload::RequestType, rpwc_msgs::setTcpPayload::ResponseType>(
-            "rpwc_set_tcp_payload", &callback_set_tcp_payload);
+    ros::ServiceServer set_tcp_payload_srv = nh_->advertiseService<rpwc_msgs::setTcpPayload::RequestType, rpwc_msgs::setTcpPayload::ResponseType>("rpwc_set_tcp_payload", &callback_set_tcp_payload);
     ros::ServiceServer set_controller_srv = nh_->advertiseService<rpwc_msgs::setController::RequestType, rpwc_msgs::setController::ResponseType>("rpwc_controller", &callback_set_controller);
     ros::ServiceServer srv_get_controller = nh_->advertiseService<rpwc_msgs::getController::RequestType, rpwc_msgs::getController::ResponseType>("get_rpwc_controller", &callback_get_controller);
     ros::ServiceServer set_free_jog_params_srv = nh_->advertiseService<rpwc_msgs::setFreeJogParams::RequestType, rpwc_msgs::setFreeJogParams::ResponseType>("set_free_jog_params", &callback_set_free_jog_params);

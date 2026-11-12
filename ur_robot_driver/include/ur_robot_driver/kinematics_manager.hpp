@@ -109,13 +109,16 @@ public:
     /** @brief Returns the number of joints in the EE kinematic chain. Used by move_j() and action servers. */
     int getNumJoints() const { return num_joints_; }
 
+    bool ik_reset(RobotConfig requested);
+
+
 private:
     void jointStatePublisherThread();
     void posePublisherThread();
     void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
     bool callbackRobotCurrPose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
     bool callbackSetPayload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPayload::Response &res);
-
+    
     ros::NodeHandle &nh_;
     std::shared_ptr<urcl::UrDriver> driver_;
 
@@ -142,6 +145,8 @@ private:
 
     ros::ServiceServer robot_curr_pose_srv_;
     ros::ServiceServer set_payload_srv_;
+
+    std::string root_name_, tip_name_, ll_name_;
 };
 
 #endif // UR_KINEMATICS_MANAGER_HPP

@@ -36,15 +36,15 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     : nh_(nh), driver_(std::move(driver)), num_joints_(0), first_quat_ee_(true), first_quat_ll_(true), rate_hz_(50.0)
 {
     std::string name_space = nh_.getNamespace();
-    std::string root_name, tip_name, ll_name;
+    
 
-    if (!nh_.getParam("root_name", root_name))
-        throw std::runtime_error("Param root_name missing");
+    if (!nh_.getParam("root_name_", root_name_))
+        throw std::runtime_error("Param root_name_ missing");
 
-    if (!nh_.getParam("tip_name", tip_name))
-        throw std::runtime_error("Param tip_name missing");
+    if (!nh_.getParam("tip_name_", tip_name_))
+        throw std::runtime_error("Param tip_name_ missing");
 
-    if (!nh_.getParam("last_link_name", ll_name))
+    if (!nh_.getParam("last_link_name", ll_name_))
         throw std::runtime_error("Param last_link_name missing");
 
     double x_pos_ee, y_pos_ee, z_pos_ee, roll_ee, pitch_ee, yaw_ee, roll_last_link, pitch_last_link, yaw_last_link;
@@ -95,10 +95,10 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     if (!kdl_parser::treeFromUrdfModel(model, kdl_tree_))
         throw std::runtime_error("Failed to construct kdl tree");
 
-    if (!kdl_tree_.getChain(root_name, ll_name, kdl_chain_ee_))
+    if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ee_))
     {
         ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name << " --> " << ll_name);
+        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name_);
         ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
         ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
         ROS_ERROR_STREAM("  The segments are:");
@@ -114,22 +114,22 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     );
 
 
-    kdl_chain_ee_.addSegment(KDL::Segment(tip_name, KDL::Joint(KDL::Joint::None), kdl_lastlink2ee));
+    kdl_chain_ee_.addSegment(KDL::Segment(tip_name_, KDL::Joint(KDL::Joint::None), kdl_lastlink2ee));
 
-    ROS_INFO_STREAM("  " << root_name << " --> " << tip_name);
+    ROS_INFO_STREAM("  " << root_name_ << " --> " << tip_name_);
     ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfJoints() << " joints");
     ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfSegments() << " segments");
     ROS_INFO_STREAM("  The segments are:");
     for (unsigned int i = 0; i < kdl_chain_ee_.getNrOfSegments(); i++) {
       const auto& seg = kdl_chain_ee_.getSegment(i);
       ROS_INFO_STREAM("    " << seg.getName());
-  }
+    }
 
 
-    if (!kdl_tree_.getChain(root_name, ll_name, kdl_chain_ll_))
+    if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ll_))
     {
         ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name << " --> " << ll_name);
+        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name_);
         ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
         ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
         ROS_ERROR_STREAM("  The segments are:");
@@ -146,8 +146,8 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
     fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
-    curr_pose_ee_.header.frame_id = root_name;
-    curr_pose_ll_.header.frame_id = root_name;
+    curr_pose_ee_.header.frame_id = root_name_;
+    curr_pose_ll_.header.frame_id = root_name_;
 
    
     t_tool02LastLink_ = KDL::Frame::Identity();
@@ -203,6 +203,45 @@ KinematicsManager::RobotConfig KinematicsManager::makeRobotConfig(
     validateSerializedValue(result.mass);
     for (double value : result.cog) validateSerializedValue(value);
     return result;
+}
+
+bool KinematicsManager::ik_reset(KinematicsManager::RobotConfig requested)
+{
+    // Implement the inverse kinematics reset logic here
+    if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ee_))
+    {
+        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name_);
+        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+        ROS_ERROR_STREAM("  The segments are:");
+        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
+        for (auto it = segment_map.begin(); it != segment_map.end(); it++)
+            ROS_ERROR_STREAM("    " << (*it).first);
+        return false;
+    }
+    KDL::Frame kdl_lastlink2ee(
+        KDL::Rotation::RPY(requested.tcp_offset[3], requested.tcp_offset[4], requested.tcp_offset[5]),
+        KDL::Vector(requested.tcp_offset[0], requested.tcp_offset[1], requested.tcp_offset[2])
+    );
+
+    kdl_chain_ee_.addSegment(KDL::Segment(tip_name_, KDL::Joint(KDL::Joint::None), kdl_lastlink2ee));
+
+    ROS_INFO_STREAM("  " << root_name_ << " --> " << tip_name_);
+    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfJoints() << " joints");
+    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfSegments() << " segments");
+    ROS_INFO_STREAM("  The segments are:");
+    for (unsigned int i = 0; i < kdl_chain_ee_.getNrOfSegments(); i++) {
+      const auto& seg = kdl_chain_ee_.getSegment(i);
+      ROS_INFO_STREAM("    " << seg.getName());
+    }
+
+    num_joints_ = kdl_chain_ee_.getNrOfJoints();
+    fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
+
+    q_msr_= KDL::JntArray(num_joints_);
+
+    return true;
 }
 
 std::unique_lock<std::mutex> KinematicsManager::lockRobotConfig() const
