@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <urdf/model.h>
@@ -172,6 +173,38 @@ KinematicsManager::RobotConfig KinematicsManager::makeRobotConfig(
     return result;
 }
 
+KinematicsManager::PreparedPose KinematicsManager::prepareRobotPose(
+    const RobotConfig& config, const urcl::vector6d_t& joints) const
+{
+    PreparedPose pose;
+    pose.joints.resize(num_joints_);
+    for (int i = 0; i < num_joints_; ++i)
+    {
+        if (!std::isfinite(joints[i]))
+            throw std::invalid_argument("RTDE joint position must be finite");
+        pose.joints(i) = joints[i];
+    }
+
+    // The publisher owns its FK solver; a local solver avoids sharing mutable
+    // KDL solver state with the publishing thread.
+    KDL::ChainFkSolverPos_recursive solver(kdl_chain_ll_);
+    if (solver.JntToCart(pose.joints, pose.base_to_last_link) < 0)
+        throw std::runtime_error("Cannot compute last-link FK from verified RTDE joints");
+    pose.base_to_ee = pose.base_to_last_link * config.last_link_to_ee;
+    for (const KDL::Frame* frame : {&pose.base_to_last_link, &pose.base_to_ee})
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!std::isfinite(frame->p(i)))
+                throw std::runtime_error("Prepared robot pose has non-finite translation");
+            for (int j = 0; j < 3; ++j)
+                if (!std::isfinite(frame->M(i, j)))
+                    throw std::runtime_error("Prepared robot pose has non-finite rotation");
+        }
+    }
+    return pose;
+}
+
 std::unique_lock<std::mutex> KinematicsManager::lockRobotConfig() const
 {
     return std::unique_lock<std::mutex>(config_command_mutex_);
@@ -190,14 +223,24 @@ void KinematicsManager::sendRobotConfig(const RobotConfig& config,
 }
 
 void KinematicsManager::commitVerifiedRobotConfig(const RobotConfig& config,
-                                                   const std::unique_lock<std::mutex>& lock)
+                                                   const PreparedPose& pose,
+                                                   const std::unique_lock<std::mutex>& lock,
+                                                   const std::function<bool()>& still_ready)
 {
     if (!lock.owns_lock() || lock.mutex() != &config_command_mutex_)
         throw std::logic_error("Robot configuration lock required");
     std::lock_guard<std::mutex> pose_lock(pose_mutex_);
+    if (!still_ready())
+        throw std::runtime_error("UR program or RTDE changed before verified pose commit");
+    const ros::Time stamp = ros::Time::now();
+    curr_pose_ll_.header.stamp = stamp;
+    curr_pose_ee_.header.stamp = stamp;
+    frameToPose(pose.base_to_last_link, first_quat_ll_, quat_ll_old_, curr_pose_ll_.pose);
+    frameToPose(pose.base_to_ee, first_quat_ee_, quat_ee_old_, curr_pose_ee_.pose);
+    pose_joints_ = pose.joints;
     config_ = config;
     active_last_link_to_ee_ = config.last_link_to_ee;
-    have_pose_ = false;
+    have_pose_ = true;
     config_applied_.store(true);
 }
 

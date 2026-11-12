@@ -7,6 +7,7 @@
 // System includes
 #include <atomic>
 #include <array>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,6 +46,13 @@ public:
         KDL::Frame last_link_to_ee;
     };
 
+    struct PreparedPose
+    {
+        KDL::Frame base_to_last_link;
+        KDL::Frame base_to_ee;
+        KDL::JntArray joints;
+    };
+
     /**
      * @brief Parses the URDF, builds KDL chains, creates FK solvers, and loads and
      *        precomputes all tool and payload configuration from ROS parameters.
@@ -70,12 +78,17 @@ public:
     RobotConfig makeRobotConfig(const std::array<double, 3>& translation,
                                 const std::array<double, 3>& rpy, double mass,
                                 const std::array<double, 3>& cog) const;
+    /** Computes a candidate pose from verified RTDE joints without changing active state. */
+    PreparedPose prepareRobotPose(const RobotConfig& config,
+                                  const urcl::vector6d_t& joints) const;
     /** Hold this lock through a runtime write and RTDE verification. */
     std::unique_lock<std::mutex> lockRobotConfig() const;
     /** The supplied lock also serializes writes by the existing payload service. */
     void sendRobotConfig(const RobotConfig& config, const std::unique_lock<std::mutex>& lock);
-    /** Updates the in-memory restart configuration after successful readback. */
-    void commitVerifiedRobotConfig(const RobotConfig& config, const std::unique_lock<std::mutex>& lock);
+    /** Makes the verified configuration and its first pose available together. */
+    void commitVerifiedRobotConfig(const RobotConfig& config, const PreparedPose& pose,
+                                   const std::unique_lock<std::mutex>& lock,
+                                   const std::function<bool()>& still_ready);
 
     /** Marks the sent TCP configuration applied only after controller readback. */
     void markRobotConfigVerified() { config_applied_.store(true); }

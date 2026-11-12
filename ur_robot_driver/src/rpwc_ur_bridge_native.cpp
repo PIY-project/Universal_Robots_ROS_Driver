@@ -670,9 +670,48 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
         return fail_update(reason);
     }
 
+    BridgeRtdeSample verified_sample;
+    if (!tcp_verifier_->snapshot(verified_sample) ||
+        verified_sample.program_epoch != epoch ||
+        verified_sample.sequence <= after_sequence ||
+        !TcpVerifier::equivalent(requested.tcp_offset, verified_sample.tcp_offset))
+    {
+        const std::string reason = "No current RTDE joint sample with the verified TCP";
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, reason);
+        return fail_update(reason);
+    }
+
+    KinematicsManager::PreparedPose prepared_pose;
     try
     {
-        kinematics_manager_->commitVerifiedRobotConfig(requested, config_lock);
+        prepared_pose = kinematics_manager_->prepareRobotPose(requested, verified_sample.actual_q);
+    }
+    catch (const std::exception& e)
+    {
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, e.what());
+        return fail_update(std::string("Failed to prepare verified robot pose: ") + e.what());
+    }
+
+    // Keep the previous confirmed configuration if the program or RTDE changed
+    // while preparing FK. The reconfiguration flag remains set until return.
+    const auto max_sample_age = std::chrono::milliseconds(
+        static_cast<int>(std::max(0.25, 5.0 / freq_rtde_hz_) * 1000.0));
+    const auto still_ready = [&] {
+        return std::chrono::steady_clock::now() - verified_sample.received_at <= max_sample_age &&
+            ur_program_connected_.load() && robot_state_manager_->isReady() &&
+            tcp_verifier_->motionReady() && tcp_verifier_->epoch() == epoch;
+    };
+    if (!still_ready())
+    {
+        const std::string reason = "Verified RTDE sample is stale or robot became unavailable before tool configuration commit";
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, reason);
+        return fail_update(reason);
+    }
+
+    try
+    {
+        kinematics_manager_->commitVerifiedRobotConfig(requested, prepared_pose, config_lock,
+                                                        still_ready);
     }
     catch (const std::exception& e)
     {
