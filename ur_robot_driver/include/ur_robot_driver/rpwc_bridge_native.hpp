@@ -150,6 +150,7 @@ std::atomic<bool> bridge_threads_running_{false};
 std::atomic<bool> cancel_required_{false};
 std::atomic<bool> active_motion_goal_{false};
 std::atomic<bool> reconfiguring_robot_{false};
+std::atomic<bool> tool_update_failed_{false};
 std::atomic<bool> ur_program_connected_{false};
 std::mutex goal_admission_mutex_;
 std::mutex config_operation_mutex_;

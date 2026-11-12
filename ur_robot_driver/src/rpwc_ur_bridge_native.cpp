@@ -324,7 +324,8 @@ void handleRobotProgramState(bool program_running)
 
 bool motion_ready()
 {
-    return !reconfiguring_robot_.load() && ur_program_connected_.load() &&
+    return !reconfiguring_robot_.load() && !tool_update_failed_.load() &&
+           ur_program_connected_.load() &&
            robot_state_manager_ && robot_state_manager_->isReady() &&
            tcp_verifier_ && tcp_verifier_->motionReady() &&
            kinematics_manager_ && kinematics_manager_->isRobotConfigVerified();
@@ -353,6 +354,12 @@ void thread_configure_robot()
         if (cancel_required_.exchange(false) && ur_instruction_executor_)
             ur_instruction_executor_->cancelMotion();
 
+        if (tool_update_failed_.load())
+        {
+            tcp_verifier_->waitForChange(std::chrono::milliseconds(100));
+            continue;
+        }
+
         if (!ur_program_connected_.load() || !robot_state_manager_ ||
             !robot_state_manager_->isReady() || !tcp_verifier_->programRunning())
         {
@@ -368,7 +375,7 @@ void thread_configure_robot()
         }
 
         std::unique_lock<std::mutex> operation_lock(config_operation_mutex_);
-        if (tcp_verifier_->epoch() != epoch || tcp_verifier_->isFault() ||
+        if (tool_update_failed_.load() || tcp_verifier_->epoch() != epoch || tcp_verifier_->isFault() ||
             tcp_verifier_->isVerified() ||
             !tcp_verifier_->prepareReconfiguration(kinematics_manager_->expectedTcpOffset(), epoch))
             continue;
@@ -554,7 +561,9 @@ bool callback_check_hardware_status(rpwc_msgs::checkHardwareStatus::Request &req
     res.result.data = init_success && motion_ready();
     if (init_success && !res.result.data)
     {
-        res.info.data = tcp_verifier_ && tcp_verifier_->isFault() ?
+        res.info.data = tool_update_failed_.load() ?
+            "Tool update failed; deactivate the arm and verify the physical tool before reactivation" :
+            tcp_verifier_ && tcp_verifier_->isFault() ?
             "TCP verification failed: " + tcp_verifier_->faultReason() :
             "Robot program, TCP verification, or RTDE stream not ready";
     }
@@ -572,9 +581,8 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
     };
     if (!kinematics_manager_ || !tcp_verifier_ || !robot_state_manager_)
         return reject("Robot configuration is unavailable");
-
-    
-    
+    if (tool_update_failed_.load())
+        return reject("A previous tool update failed; deactivate the arm before retrying");
 
     KinematicsManager::RobotConfig requested;
     try
@@ -589,12 +597,11 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
         return reject(e.what());
     }
 
-    if (!kinematics_manager_->ik_reset(requested))
-        return reject("Failed to reset inverse kinematics");
-
     std::unique_lock<std::mutex> operation_lock(config_operation_mutex_, std::try_to_lock);
     if (!operation_lock.owns_lock())
         return reject("Robot configuration is already in progress");
+    if (tool_update_failed_.load())
+        return reject("A previous tool update failed; deactivate the arm before retrying");
     {
         std::lock_guard<std::mutex> admission_lock(goal_admission_mutex_);
         if (active_motion_goal_.load())
@@ -610,16 +617,22 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
         reconfiguring_robot_.store(true);
     }
     ReconfigurationScope reconfiguration_scope;
+    const auto fail_update = [&reject](const std::string& reason) {
+        tool_update_failed_.store(true);
+        cancel_required_.store(true);
+        ROS_ERROR_STREAM("[TCP]: Tool update failed; motion stays blocked until arm reactivation: " << reason);
+        return reject(reason);
+    };
     kinematics_manager_->invalidateRobotConfig();
 
-    const auto previous_expected = kinematics_manager_->expectedTcpOffset();
+    const auto previous_expected = tcp_verifier_->expected();
     auto config_lock = kinematics_manager_->lockRobotConfig();
     const std::uint64_t epoch = tcp_verifier_->epoch();
     if (!tcp_verifier_->prepareReconfiguration(requested.tcp_offset, epoch))
     {
         tcp_verifier_->failReconfiguration(epoch, previous_expected,
             "UR program or RTDE became unavailable during reconfiguration");
-        return reject("UR program or RTDE became unavailable during reconfiguration");
+        return fail_update("UR program or RTDE became unavailable during reconfiguration");
     }
 
     try
@@ -630,7 +643,7 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
     {
         tcp_verifier_->failReconfiguration(epoch, previous_expected, e.what());
         ROS_ERROR_STREAM("[TCP]: Runtime configuration failed: " << e.what());
-        return reject(e.what());
+        return fail_update(e.what());
     }
 
     const std::uint64_t after_sequence = tcp_verifier_->sequence();
@@ -638,7 +651,7 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
     {
         tcp_verifier_->failReconfiguration(epoch, previous_expected,
             "UR program or RTDE changed before TCP verification");
-        return reject("UR program or RTDE changed before TCP verification");
+        return fail_update("UR program or RTDE changed before TCP verification");
     }
 
     const auto verification = tcp_verifier_->waitForVerification(epoch,
@@ -654,10 +667,18 @@ bool callback_set_tcp_payload(rpwc_msgs::setTcpPayload::Request &req, rpwc_msgs:
             "UR program or RTDE changed during TCP verification";
         tcp_verifier_->failReconfiguration(epoch, previous_expected, reason);
         ROS_ERROR_STREAM("[TCP]: Runtime configuration failed: " << reason);
-        return reject(reason);
+        return fail_update(reason);
     }
 
-    kinematics_manager_->commitVerifiedRobotConfig(requested, config_lock);
+    try
+    {
+        kinematics_manager_->commitVerifiedRobotConfig(requested, config_lock);
+    }
+    catch (const std::exception& e)
+    {
+        tcp_verifier_->failReconfiguration(epoch, previous_expected, e.what());
+        return fail_update(std::string("Failed to commit verified tool configuration: ") + e.what());
+    }
     ROS_INFO_STREAM("[TCP]: Runtime controller TCP verified: "
         << format_tcp(tcp_verifier_->expected()) << "; payload command accepted");
     res.result.data = true;

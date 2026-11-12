@@ -35,14 +35,8 @@ void validateSerializedValue(double value)
 KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::UrDriver> driver)
     : nh_(nh), driver_(std::move(driver)), num_joints_(0), first_quat_ee_(true), first_quat_ll_(true), rate_hz_(50.0)
 {
-    std::string name_space = nh_.getNamespace();
-    
-
-    if (!nh_.getParam("root_name_", root_name_))
-        throw std::runtime_error("Param root_name_ missing");
-
-    if (!nh_.getParam("tip_name_", tip_name_))
-        throw std::runtime_error("Param tip_name_ missing");
+    if (!nh_.getParam("root_name", root_name_))
+        throw std::runtime_error("Param root_name missing");
 
     if (!nh_.getParam("last_link_name", ll_name_))
         throw std::runtime_error("Param last_link_name missing");
@@ -95,37 +89,6 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
     if (!kdl_parser::treeFromUrdfModel(model, kdl_tree_))
         throw std::runtime_error("Failed to construct kdl tree");
 
-    if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ee_))
-    {
-        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name_);
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-        ROS_ERROR_STREAM("  The segments are:");
-        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
-        for (auto it = segment_map.begin(); it != segment_map.end(); it++)
-            ROS_ERROR_STREAM("    " << (*it).first);
-        throw std::runtime_error("Error building kdl_chain_ee_");
-    }
-
-    KDL::Frame kdl_lastlink2ee(
-        KDL::Rotation::RPY(roll_ee, pitch_ee, yaw_ee),
-        KDL::Vector(x_pos_ee, y_pos_ee, z_pos_ee)
-    );
-
-
-    kdl_chain_ee_.addSegment(KDL::Segment(tip_name_, KDL::Joint(KDL::Joint::None), kdl_lastlink2ee));
-
-    ROS_INFO_STREAM("  " << root_name_ << " --> " << tip_name_);
-    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfJoints() << " joints");
-    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfSegments() << " segments");
-    ROS_INFO_STREAM("  The segments are:");
-    for (unsigned int i = 0; i < kdl_chain_ee_.getNrOfSegments(); i++) {
-      const auto& seg = kdl_chain_ee_.getSegment(i);
-      ROS_INFO_STREAM("    " << seg.getName());
-    }
-
-
     if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ll_))
     {
         ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
@@ -141,9 +104,11 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
 
     ROS_INFO("KDL Chains ready");
 
-    num_joints_ = kdl_chain_ee_.getNrOfJoints();
+    num_joints_ = kdl_chain_ll_.getNrOfJoints();
+    if (num_joints_ != 6)
+        throw std::runtime_error("UR bridge requires six mechanical joints");
     q_msr_.resize(num_joints_);
-    fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
+    pose_joints_.resize(num_joints_);
     fk_pos_solver_ll_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ll_));
 
     curr_pose_ee_.header.frame_id = root_name_;
@@ -164,6 +129,7 @@ KinematicsManager::KinematicsManager(ros::NodeHandle &nh, std::shared_ptr<urcl::
 
     config_ = makeRobotConfig({{x_pos_ee, y_pos_ee, z_pos_ee}},
         {{roll_ee, pitch_ee, yaw_ee}}, mass, {{cog[0], cog[1], cog[2]}});
+    active_last_link_to_ee_ = config_.last_link_to_ee;
 }
 
 KinematicsManager::~KinematicsManager()
@@ -190,11 +156,12 @@ KinematicsManager::RobotConfig KinematicsManager::makeRobotConfig(
     if (!std::isfinite(mass) || mass < 0.0)
         throw std::invalid_argument("Payload mass must be finite and nonnegative");
 
-    KDL::Frame last_link_to_ee(KDL::Rotation::RPY(rpy[0], rpy[1], rpy[2]),
-                               KDL::Vector(translation[0], translation[1], translation[2]));
-    const KDL::Frame tool0_to_ee = t_tool02LastLink_ * last_link_to_ee;
-    const KDL::Vector cog_tool0 = t_tool02LastLink_ * KDL::Vector(cog[0], cog[1], cog[2]);
     RobotConfig result;
+    result.last_link_to_ee = KDL::Frame(
+        KDL::Rotation::RPY(rpy[0], rpy[1], rpy[2]),
+        KDL::Vector(translation[0], translation[1], translation[2]));
+    const KDL::Frame tool0_to_ee = t_tool02LastLink_ * result.last_link_to_ee;
+    const KDL::Vector cog_tool0 = t_tool02LastLink_ * KDL::Vector(cog[0], cog[1], cog[2]);
     result.tcp_offset = {{tool0_to_ee.p.x(), tool0_to_ee.p.y(), tool0_to_ee.p.z(),
         tool0_to_ee.M.GetRot().x(), tool0_to_ee.M.GetRot().y(), tool0_to_ee.M.GetRot().z()}};
     result.mass = mass;
@@ -203,45 +170,6 @@ KinematicsManager::RobotConfig KinematicsManager::makeRobotConfig(
     validateSerializedValue(result.mass);
     for (double value : result.cog) validateSerializedValue(value);
     return result;
-}
-
-bool KinematicsManager::ik_reset(KinematicsManager::RobotConfig requested)
-{
-    // Implement the inverse kinematics reset logic here
-    if (!kdl_tree_.getChain(root_name_, ll_name_, kdl_chain_ee_))
-    {
-        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  " << root_name_ << " --> " << ll_name_);
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
-        ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
-        ROS_ERROR_STREAM("  The segments are:");
-        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
-        for (auto it = segment_map.begin(); it != segment_map.end(); it++)
-            ROS_ERROR_STREAM("    " << (*it).first);
-        return false;
-    }
-    KDL::Frame kdl_lastlink2ee(
-        KDL::Rotation::RPY(requested.tcp_offset[3], requested.tcp_offset[4], requested.tcp_offset[5]),
-        KDL::Vector(requested.tcp_offset[0], requested.tcp_offset[1], requested.tcp_offset[2])
-    );
-
-    kdl_chain_ee_.addSegment(KDL::Segment(tip_name_, KDL::Joint(KDL::Joint::None), kdl_lastlink2ee));
-
-    ROS_INFO_STREAM("  " << root_name_ << " --> " << tip_name_);
-    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfJoints() << " joints");
-    ROS_INFO_STREAM("  Tree has " << kdl_chain_ee_.getNrOfSegments() << " segments");
-    ROS_INFO_STREAM("  The segments are:");
-    for (unsigned int i = 0; i < kdl_chain_ee_.getNrOfSegments(); i++) {
-      const auto& seg = kdl_chain_ee_.getSegment(i);
-      ROS_INFO_STREAM("    " << seg.getName());
-    }
-
-    num_joints_ = kdl_chain_ee_.getNrOfJoints();
-    fk_pos_solver_ee_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_ee_));
-
-    q_msr_= KDL::JntArray(num_joints_);
-
-    return true;
 }
 
 std::unique_lock<std::mutex> KinematicsManager::lockRobotConfig() const
@@ -254,7 +182,7 @@ void KinematicsManager::sendRobotConfig(const RobotConfig& config,
 {
     if (!lock.owns_lock() || lock.mutex() != &config_command_mutex_)
         throw std::logic_error("Robot configuration lock required");
-    config_applied_.store(false);
+    invalidateRobotConfig();
     if (!driver_->setTcpOffset(config.tcp_offset))
         throw std::runtime_error("TCP set failed");
     if (!driver_->setPayload(config.mass, config.cog))
@@ -266,8 +194,18 @@ void KinematicsManager::commitVerifiedRobotConfig(const RobotConfig& config,
 {
     if (!lock.owns_lock() || lock.mutex() != &config_command_mutex_)
         throw std::logic_error("Robot configuration lock required");
+    std::lock_guard<std::mutex> pose_lock(pose_mutex_);
     config_ = config;
+    active_last_link_to_ee_ = config.last_link_to_ee;
+    have_pose_ = false;
     config_applied_.store(true);
+}
+
+void KinematicsManager::invalidateRobotConfig()
+{
+    std::lock_guard<std::mutex> pose_lock(pose_mutex_);
+    config_applied_.store(false);
+    have_pose_ = false;
 }
 
 urcl::vector6d_t KinematicsManager::expectedTcpOffset() const
@@ -311,23 +249,17 @@ void KinematicsManager::updateRtdeJointData(const urcl::vector6d_t &joints, cons
     rob_joints_vel_ = vels;
 }
 
-void KinematicsManager::fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old)
+void KinematicsManager::frameToPose(const KDL::Frame& frame, bool& first_quat,
+                                    Eigen::Quaterniond& quat_old, geometry_msgs::Pose& pose)
 {
     Eigen::Matrix3d orient;
-    KDL::Frame x;
-    solver->JntToCart(q, x);
-
     for (int i = 0; i < 3; i++)
     {
-        pos(i) = x.p(i);
-
         for (int j = 0; j < 3; j++)
-        {
-            orient(i, j) = x.M(i, j);
-        }
+            orient(i, j) = frame.M(i, j);
     }
 
-    quat = orient;
+    Eigen::Quaterniond quat(orient);
     quat.normalize();
 
     if (first_quat)
@@ -336,7 +268,6 @@ void KinematicsManager::fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> 
         quat_old = quat;
     }
 
-    // rotation to quaternion issue , "Sign Flip" , check  http://www.dtic.mil/dtic/tr/fulltext/u2/1043624.pdf
     double sign_check = quat.w() * quat_old.w() + quat.x() * quat_old.x() + quat.y() * quat_old.y() + quat.z() * quat_old.z();
     if (sign_check < 0.0)
     {
@@ -345,6 +276,13 @@ void KinematicsManager::fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> 
     }
 
     quat_old = quat;
+    pose.position.x = frame.p.x();
+    pose.position.y = frame.p.y();
+    pose.position.z = frame.p.z();
+    pose.orientation.w = quat.w();
+    pose.orientation.x = quat.x();
+    pose.orientation.y = quat.y();
+    pose.orientation.z = quat.z();
 }
 
 void KinematicsManager::jointStatePublisherThread()
@@ -398,8 +336,6 @@ void KinematicsManager::posePublisherThread()
 {
     ROS_INFO("[robot_curr_pose]: Init");
 
-    Eigen::Vector3d pos_ee_msr, pos_ll_msr;
-    Eigen::Quaterniond quat_ee_msr, quat_ll_msr;
     first_quat_ee_ = true;
     first_quat_ll_ = true;
 
@@ -421,34 +357,38 @@ void KinematicsManager::posePublisherThread()
             q_local = q_msr_;
         }
 
-        fwdKin(fk_pos_solver_ee_, q_local, first_quat_ee_, pos_ee_msr, quat_ee_msr, quat_ee_old_);
-        curr_pose_ee_.header.stamp = ros::Time::now();
-        curr_pose_ee_.pose.position.x = pos_ee_msr.x();
-        curr_pose_ee_.pose.position.y = pos_ee_msr.y();
-        curr_pose_ee_.pose.position.z = pos_ee_msr.z();
-        curr_pose_ee_.pose.orientation.w = quat_ee_msr.w();
-        curr_pose_ee_.pose.orientation.x = quat_ee_msr.x();
-        curr_pose_ee_.pose.orientation.y = quat_ee_msr.y();
-        curr_pose_ee_.pose.orientation.z = quat_ee_msr.z();
-        fwdKin(fk_pos_solver_ll_, q_local, first_quat_ll_, pos_ll_msr, quat_ll_msr, quat_ll_old_);
-        curr_pose_ll_.header.stamp = ros::Time::now();
-        curr_pose_ll_.pose.position.x = pos_ll_msr.x();
-        curr_pose_ll_.pose.position.y = pos_ll_msr.y();
-        curr_pose_ll_.pose.position.z = pos_ll_msr.z();
-        curr_pose_ll_.pose.orientation.w = quat_ll_msr.w();
-        curr_pose_ll_.pose.orientation.x = quat_ll_msr.x();
-        curr_pose_ll_.pose.orientation.y = quat_ll_msr.y();
-        curr_pose_ll_.pose.orientation.z = quat_ll_msr.z();
-
-        msg.poseBaseToEe = curr_pose_ee_;
-        msg.poseBaseToLastLink = curr_pose_ll_;
-        msg.joint_position.clear();
-        for (int i = 0; i < num_joints_; i++)
+        KDL::Frame base_to_last_link;
+        if (fk_pos_solver_ll_->JntToCart(q_local, base_to_last_link) < 0)
         {
-            tmp.data = q_local(i);
-            msg.joint_position.push_back(tmp);
+            ROS_ERROR_THROTTLE(1.0, "[robot_curr_pose]: Last-link FK failed");
+            r_HZ.sleep();
+            continue;
         }
-        pub.publish(msg);
+
+        {
+            std::lock_guard<std::mutex> pose_lock(pose_mutex_);
+            if (config_applied_.load())
+            {
+                const KDL::Frame base_to_ee = base_to_last_link * active_last_link_to_ee_;
+                const ros::Time stamp = ros::Time::now();
+                curr_pose_ll_.header.stamp = stamp;
+                curr_pose_ee_.header.stamp = stamp;
+                frameToPose(base_to_last_link, first_quat_ll_, quat_ll_old_, curr_pose_ll_.pose);
+                frameToPose(base_to_ee, first_quat_ee_, quat_ee_old_, curr_pose_ee_.pose);
+                pose_joints_ = q_local;
+                have_pose_ = true;
+
+                msg.poseBaseToEe = curr_pose_ee_;
+                msg.poseBaseToLastLink = curr_pose_ll_;
+                msg.joint_position.clear();
+                for (int i = 0; i < num_joints_; i++)
+                {
+                    tmp.data = q_local(i);
+                    msg.joint_position.push_back(tmp);
+                }
+                pub.publish(msg);
+            }
+        }
 
         r_HZ.sleep();
     }
@@ -459,21 +399,17 @@ void KinematicsManager::posePublisherThread()
 
 bool KinematicsManager::callbackRobotCurrPose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res)
 {
-    res.poseBaseToEe.header.stamp = ros::Time::now();
-    res.poseBaseToEe.header.frame_id = curr_pose_ee_.header.frame_id;
-    res.poseBaseToEe.pose = curr_pose_ee_.pose;
-    res.poseBaseToLastLink.header.stamp = ros::Time::now();
-    res.poseBaseToLastLink.header.frame_id = curr_pose_ll_.header.frame_id;
-    res.poseBaseToLastLink.pose = curr_pose_ll_.pose;
+    std::lock_guard<std::mutex> pose_lock(pose_mutex_);
+    if (!config_applied_.load() || !have_pose_)
+        return false;
 
+    res.poseBaseToEe = curr_pose_ee_;
+    res.poseBaseToLastLink = curr_pose_ll_;
+    for (int i = 0; i < num_joints_; i++)
     {
-        std::lock_guard<std::mutex> lk(joint_data_mutex_);
-        for (int i = 0; i < num_joints_; i++)
-        {
-            std_msgs::Float64 tmp;
-            tmp.data = q_msr_(i);
-            res.joint_position.push_back(tmp);
-        }
+        std_msgs::Float64 tmp;
+        tmp.data = pose_joints_(i);
+        res.joint_position.push_back(tmp);
     }
 
     return true;
@@ -485,13 +421,6 @@ bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, 
     {
         res.result.data = false;
         res.info.data = "Payload mass cannot be negative";
-        return true;
-    }
-    if (req.center_of_mass.x == 0.0 && req.center_of_mass.y == 0.0 &&
-        req.center_of_mass.z == 0.0)
-    {
-        res.result.data = false;
-        res.info.data = "Center of mass values must be different than zero";
         return true;
     }
     if (!std::isfinite(req.mass.data) ||
@@ -524,12 +453,32 @@ bool KinematicsManager::callbackSetPayload(rpwc_msgs::setPayload::Request &req, 
     }
 
     auto lock = lockRobotConfig();
-    bool ok = driver_->setPayload(payload, cog_ur);
+    if (!config_applied_.load())
+    {
+        res.result.data = false;
+        res.info.data = "Robot configuration is not verified";
+        return true;
+    }
+
+    bool ok = false;
+    try
+    {
+        ok = driver_->setPayload(payload, cog_ur);
+    }
+    catch (const std::exception& e)
+    {
+        invalidateRobotConfig();
+        res.result.data = false;
+        res.info.data = e.what();
+        return true;
+    }
     if (ok)
     {
         config_.mass = payload;
         config_.cog = cog_ur;
     }
+    else
+        invalidateRobotConfig();
     res.result.data = ok;
     if (!ok)
         res.info.data = "Payload set failed";

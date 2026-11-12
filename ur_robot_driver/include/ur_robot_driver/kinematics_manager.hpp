@@ -42,6 +42,7 @@ public:
         urcl::vector6d_t tcp_offset{};
         double mass = 0.0;
         urcl::vector3d_t cog{};
+        KDL::Frame last_link_to_ee;
     };
 
     /**
@@ -78,7 +79,7 @@ public:
 
     /** Marks the sent TCP configuration applied only after controller readback. */
     void markRobotConfigVerified() { config_applied_.store(true); }
-    void invalidateRobotConfig() { config_applied_.store(false); }
+    void invalidateRobotConfig();
     bool isRobotConfigVerified() const { return config_applied_.load(); }
 
     /** The flange-to-TCP pose sent to the UR controller, in m and rotation-vector rad. */
@@ -106,16 +107,14 @@ public:
      */
     void updateRtdeJointData(const urcl::vector6d_t &joints, const urcl::vector6d_t &vels);
 
-    /** @brief Returns the number of joints in the EE kinematic chain. Used by move_j() and action servers. */
+    /** @brief Returns the number of mechanical joints. Used by move_j() and action servers. */
     int getNumJoints() const { return num_joints_; }
-
-    bool ik_reset(RobotConfig requested);
-
 
 private:
     void jointStatePublisherThread();
     void posePublisherThread();
-    void fwdKin(std::shared_ptr<KDL::ChainFkSolverPos_recursive> solver, KDL::JntArray q, bool &first_quat, Eigen::Vector3d &pos, Eigen::Quaterniond &quat, Eigen::Quaterniond &quat_old);
+    void frameToPose(const KDL::Frame& frame, bool& first_quat,
+                     Eigen::Quaterniond& quat_old, geometry_msgs::Pose& pose);
     bool callbackRobotCurrPose(rpwc_msgs::robotArmState::Request &req, rpwc_msgs::robotArmState::Response &res);
     bool callbackSetPayload(rpwc_msgs::setPayload::Request &req, rpwc_msgs::setPayload::Response &res);
     
@@ -123,8 +122,8 @@ private:
     std::shared_ptr<urcl::UrDriver> driver_;
 
     KDL::Tree kdl_tree_;
-    KDL::Chain kdl_chain_ee_, kdl_chain_ll_;
-    std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ee_, fk_pos_solver_ll_;
+    KDL::Chain kdl_chain_ll_;
+    std::unique_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_ll_;
     KDL::Frame t_tool02LastLink_;
     RobotConfig config_;
     int num_joints_;
@@ -132,7 +131,11 @@ private:
     urcl::vector6d_t rob_joints_, rob_joints_vel_;
     std::mutex joint_data_mutex_;
     mutable std::mutex config_command_mutex_;
+    mutable std::mutex pose_mutex_;
     KDL::JntArray q_msr_;
+    KDL::JntArray pose_joints_;
+    KDL::Frame active_last_link_to_ee_;
+    bool have_pose_ = false;
 
     geometry_msgs::PoseStamped curr_pose_ee_, curr_pose_ll_;
     bool first_quat_ee_, first_quat_ll_;
@@ -146,7 +149,7 @@ private:
     ros::ServiceServer robot_curr_pose_srv_;
     ros::ServiceServer set_payload_srv_;
 
-    std::string root_name_, tip_name_, ll_name_;
+    std::string root_name_, ll_name_;
 };
 
 #endif // UR_KINEMATICS_MANAGER_HPP
