@@ -1,4 +1,32 @@
+#include <atomic>
+
 #include <ur_robot_driver/rpwc_bridge_native.hpp>
+
+namespace
+{
+std::atomic_bool shutdown_started_{false};
+
+void stopRuntimeManagers()
+{
+    if (robot_state_manager_)
+        robot_state_manager_->stop();
+
+    if (kinematics_manager_)
+        kinematics_manager_->stop();
+
+    if (io_manager_)
+        io_manager_->stop();
+}
+
+void joinThread(std::thread &thread, const std::string &name)
+{
+    if (!thread.joinable())
+        return;
+
+    ROS_INFO_STREAM("Joining " << name << " thread");
+    thread.join();
+}
+} // namespace
 
 // -----------------------------------------
 //                Functions
@@ -131,12 +159,23 @@ void handleRobotProgramState(bool program_running)
 
 void shutdown(std::string reason)
 {
+    if (shutdown_started_.exchange(true))
+    {
+        ROS_WARN_STREAM("Shutdown already in progress, ignoring reason: " << reason);
+        return;
+    }
+
     ROS_WARN_STREAM("Shutting down node, reason: " << reason);
     if (nh_ != nullptr)
     {
         motor_off_on_shutdown_ = nh_->param("motor_off_for_deactivation", true);
         nh_->shutdown();
     }
+
+    if (ur_driver_)
+        ur_driver_->stopControl();
+
+    stopRuntimeManagers();
 
     if (ur_primary_)
     {
@@ -152,9 +191,6 @@ void shutdown(std::string reason)
         ur_dashboard_->disconnect();
     }
 
-    if (ur_driver_)
-        ur_driver_->stopControl();
-
     ur_driver::unregisterUrclLogHandler();
     urcl::setLogLevel(urcl::LogLevel::INFO);
 }
@@ -164,6 +200,11 @@ bool exec_traj(std::vector<std::shared_ptr<urcl::control::MotionPrimitive>> wayp
     if (!robot_state_manager_ || !robot_state_manager_->isReady())
         return false;
 
+    int count = 0;
+    for (auto wp : waypoints)
+    {
+        ROS_WARN_STREAM("Waypoint " << count++ << ": vel: " << wp->velocity << " | acc: " << wp->acceleration << " | blending: " << wp->blend_radius);
+    }
     std::lock_guard<std::mutex> send_command_lock_guard(send_command_mutex_);
     return ur_instruction_executor_->executeMotion(waypoints);
 }
@@ -623,6 +664,8 @@ int main(int argc, char **argv)
     nh_ = new ros::NodeHandle();
     ros::AsyncSpinner spinner(4);
     spinner.start();
+    std::thread rtde_thread;
+    std::thread keep_alive_thread;
 
     // Set default 
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info)) // Debug
@@ -643,6 +686,15 @@ int main(int argc, char **argv)
     init_status_ = 0;
     init_success_ = false;
     init_msg_ = "";
+
+    auto cleanShutdown = [&](int exit_code, const std::string &reason) {
+        ROS_INFO("Exiting");
+        shutdown(reason);
+        joinThread(keep_alive_thread, "keep_alive");
+        joinThread(rtde_thread, "rtde");
+        spinner.stop();
+        return exit_code;
+    };
 
     // Start service for init feedback
     ros::ServiceServer check_hardware_status_srv = nh_->advertiseService<rpwc_msgs::checkHardwareStatus::RequestType, rpwc_msgs::checkHardwareStatus::ResponseType>("check_hardware_status", &callback_check_hardware_status);
@@ -847,7 +899,21 @@ int main(int argc, char **argv)
         }
     });
 
-    std::thread rtde_thread{&thread_handle_rtde};
+    ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
+    ur_primary_ = ur_driver_->getPrimaryClient();
+
+    // Init Kinematics Manager (parses URDF, builds KDL chains, sets TCP offset)
+    try
+    {
+        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
+    }
+    catch (const std::exception &e)
+    {
+        set_init_end_status(false, e.what());
+        return cleanShutdown(1, e.what());
+    }
+
+    rtde_thread = std::thread(&thread_handle_rtde);
     robot_state_manager_->start();
 
     bool calibValid = ur_driver_->checkCalibration(calibration_hash_);
@@ -862,19 +928,6 @@ int main(int argc, char **argv)
                          "for details.");
     }
 
-    ur_instruction_executor_.reset(new urcl::InstructionExecutor(ur_driver_));
-    ur_primary_ = ur_driver_->getPrimaryClient();
-
-    // Init Kinematics Manager (parses URDF, builds KDL chains, sets TCP offset)
-    try
-    {
-        kinematics_manager_.reset(new KinematicsManager(*nh_, ur_driver_));
-    }
-    catch (const std::exception &e)
-    {
-        set_init_end_status(false, e.what());
-        return 1;
-    }
     // Wait for program start — state manager handles recovery and shutdown on failure
     while (!robot_state_manager_->isReady() && ros::ok())
         ros::Duration(0.05).sleep();
@@ -882,7 +935,7 @@ int main(int argc, char **argv)
     if (!ros::ok())
     {
         set_init_end_status(false, "Program start failed");
-        return 1;
+        return cleanShutdown(1, "Program start failed");
     }
 
     // Apply robot configuration (TCP offset + payload) and start KM threads
@@ -893,7 +946,7 @@ int main(int argc, char **argv)
     catch (const std::exception &e)
     {
         set_init_end_status(false, e.what());
-        return 1;
+        return cleanShutdown(1, e.what());
     }
     kinematics_manager_->start(freq_rtde_hz_);
 
@@ -901,7 +954,7 @@ int main(int argc, char **argv)
     {
         ROS_FATAL("Failed to set speed slider");
         set_init_end_status(false, "speed slider set failed");
-        return 2;
+        return cleanShutdown(2, "speed slider set failed");
     }
 
     // Start IO Manager pub and srvs
@@ -919,12 +972,9 @@ int main(int argc, char **argv)
     JointsMove joint_act_srv("native_joints_commands");
 
     ROS_INFO("start");
-    std::thread keep_alive(&thread_keep_alive);
+    keep_alive_thread = std::thread(&thread_keep_alive);
     set_init_end_status(true, "Node started");
     ros::waitForShutdown();
 
-    ROS_INFO("Exiting");
-    spinner.stop();
-    shutdown("Node shutdown");
-    return 0;
+    return cleanShutdown(0, "Node shutdown");
 }
